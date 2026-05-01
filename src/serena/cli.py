@@ -39,6 +39,7 @@ from serena.constants import (
 from serena.prompt_factory import SerenaPromptFactory
 from serena.util.cli_util import AutoRegisteringGroup
 from serena.util.logging import MemoryLogHandler
+from serena.workspace_selection import resolve_indexing_scope
 from solidlsp.ls_config import Language
 from solidlsp.ls_types import SymbolKind
 from solidlsp.util.subprocess_util import subprocess_kwargs
@@ -778,8 +779,14 @@ class ProjectCommands(AutoRegisteringGroup):
         default="WARNING",
         help="Log level for indexing.",
     )
+    @click.option(
+        "--scope",
+        type=str,
+        default=None,
+        help="Relative path to a directory or workspace entry (.sln, .slnx, .csproj) to narrow indexing.",
+    )
     @click.option("--timeout", type=float, default=10, help="Timeout for indexing a single file.")
-    def index(project: str, name: str | None, language: tuple[str, ...], log_level: str, timeout: float) -> None:
+    def index(project: str, name: str | None, language: tuple[str, ...], log_level: str, scope: str | None, timeout: float) -> None:
         serena_config = SerenaConfig.from_config_file()
         registered_project = serena_config.get_registered_project(project, autoregister=True)
         if registered_project is None:
@@ -790,10 +797,15 @@ class ProjectCommands(AutoRegisteringGroup):
             except Exception as e:
                 raise click.ClickException(str(e))
 
-        ProjectCommands._index_project(registered_project, log_level, timeout=timeout)
+        ProjectCommands._index_project(registered_project, log_level, timeout=timeout, scope=scope)
 
     @staticmethod
-    def _index_project(registered_project: RegisteredProject, log_level: str, timeout: float) -> None:
+    def _index_project(
+        registered_project: RegisteredProject,
+        log_level: str,
+        timeout: float,
+        scope: str | None = None,
+    ) -> None:
         lvl = logging.getLevelNamesMapping()[log_level.upper()]
         logging.configure(level=lvl)
         serena_config = SerenaConfig.from_config_file()
@@ -803,7 +815,15 @@ class ProjectCommands(AutoRegisteringGroup):
         try:
             log_file = os.path.join(proj.project_root, ".serena", "logs", "indexing.txt")
 
-            files = proj.gather_source_files()
+            indexing_scope = resolve_indexing_scope(
+                proj.project_root,
+                active_workspace=proj.project_config.active_workspace,
+                explicit_scope=scope,
+            )
+            files = []
+            for relative_path in indexing_scope.relative_paths:
+                files.extend(proj.gather_source_files(relative_path))
+            files = list(dict.fromkeys(files))
 
             collected_exceptions: list[Exception] = []
             files_failed = []

@@ -95,6 +95,17 @@ This workflow is intentionally scoped to one selected C# workspace at a time. If
 multiple independent solutions simultaneously, use separate Serena projects or combine this with the
 `query_project` workflow described later in this guide.
 
+When running `serena project index`, Serena resolves indexing scope in this order:
+
+* an explicit `--scope` argument, if provided
+* the configured `active_workspace`, if it resolves to a valid `.sln`, `.slnx`, or `.csproj`
+* the full project root as a backward-compatible fallback
+
+The `--scope` option accepts a relative path to either a directory or a `.sln`, `.slnx`, or `.csproj` file.
+If a `.csproj` file is provided, Serena indexes that project's directory. If a `.sln` or `.slnx` file is provided,
+Serena expands the solution to its member projects and indexes those project directories instead. This keeps overnight
+or pre-warming index runs aligned with the same selected-workspace model used by the live C# runtime behavior.
+
 (indexing)=
 ### Indexing
 

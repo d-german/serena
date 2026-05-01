@@ -8,13 +8,17 @@ import platform
 import shutil
 import threading
 from collections.abc import Hashable, Iterable
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 
 from overrides import override
 
 from serena.util.dotnet import DotNETUtil
+from serena.workspace_selection import (
+    ResolvedWorkspaceEntry as SelectedWorkspaceEntry,
+    resolve_active_workspace_entry as resolve_selected_workspace_entry,
+)
 from solidlsp.ls import (
     LanguageServerDependencyProvider,
     LSPFileBuffer,
@@ -178,53 +182,6 @@ def find_solution_or_project_file(root_dir: str) -> str | None:
     # If no solution file was found, return the first .csproj file
     return csproj_file
 
-
-@dataclass(frozen=True)
-class SelectedWorkspaceEntry:
-    path: str
-    workspace_root: str
-    kind: str
-
-
-def resolve_selected_workspace_entry(repository_root_path: str, active_workspace: str | None) -> SelectedWorkspaceEntry | None:
-    """
-    Resolve the configured workspace entry against the repository root.
-    """
-    if not isinstance(active_workspace, str) or not active_workspace:
-        return None
-
-    repository_root = Path(repository_root_path).resolve()
-    selected_path = (repository_root / active_workspace).resolve()
-
-    try:
-        selected_path.relative_to(repository_root)
-    except ValueError:
-        log.warning(
-            "Ignoring active_workspace '%s' because it is outside the repository root %s",
-            active_workspace,
-            repository_root_path,
-        )
-        return None
-
-    if not selected_path.is_file():
-        log.warning(
-            "Ignoring active_workspace '%s' because it does not resolve to a file under %s",
-            active_workspace,
-            repository_root_path,
-        )
-        return None
-
-    suffix = selected_path.suffix.lower()
-    if suffix in (".sln", ".slnx"):
-        return SelectedWorkspaceEntry(path=str(selected_path), workspace_root=str(selected_path.parent), kind="solution")
-    if suffix == ".csproj":
-        return SelectedWorkspaceEntry(path=str(selected_path), workspace_root=str(selected_path.parent), kind="project")
-
-    log.warning(
-        "Ignoring active_workspace '%s' because only .sln, .slnx, and .csproj entries are supported",
-        active_workspace,
-    )
-    return None
 
 
 class CSharpLanguageServer(SolidLanguageServer):

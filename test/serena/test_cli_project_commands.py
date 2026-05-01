@@ -2,15 +2,19 @@
 
 import os
 import shutil
+import subprocess
 import tempfile
 import time
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 from click.testing import CliRunner
 
 from serena.cli import ProjectCommands, TopLevelCommands, find_project_root
 from serena.config.serena_config import ProjectConfig
+from serena.workspace_selection import resolve_indexing_scope
 
 pytestmark = pytest.mark.filterwarnings("ignore::UserWarning")
 
@@ -229,6 +233,97 @@ class TestProjectIndex:
             # Use ignore_errors to handle lingering file locks on Windows
             shutil.rmtree(dir1, ignore_errors=True)
             shutil.rmtree(dir2, ignore_errors=True)
+
+
+    def test_index_passes_explicit_scope_to_index_project(self, cli_runner, temp_project_dir, monkeypatch):
+        """Test that the index command forwards the explicit scope to the indexing helper."""
+        captured_scope: dict[str, str | None] = {"value": None}
+
+        class StubSerenaConfig:
+            def get_registered_project(self, project, autoregister=True):
+                return object()
+
+        def stub_index_project(registered_project, log_level, timeout, scope=None):
+            captured_scope["value"] = scope
+
+        monkeypatch.setattr("serena.cli.SerenaConfig.from_config_file", lambda: StubSerenaConfig())
+        monkeypatch.setattr(ProjectCommands, "_index_project", staticmethod(stub_index_project))
+
+        result = cli_runner.invoke(
+            ProjectCommands.index,
+            [temp_project_dir, "--scope", "src/Main/Main.sln", "--log-level", "ERROR"],
+        )
+
+        assert result.exit_code == 0, f"Command failed: {result.output}"
+        assert captured_scope["value"] == "src/Main/Main.sln"
+
+
+class TestProjectIndexingScope:
+    """Tests for workspace-aware indexing scope resolution."""
+
+    @staticmethod
+    def _stub_solution_listing(monkeypatch, output: str, return_code: int = 0):
+        monkeypatch.setattr("serena.workspace_selection.shutil.which", lambda command: "dotnet" if command == "dotnet" else None)
+        monkeypatch.setattr(
+            "serena.workspace_selection.subprocess.run",
+            lambda *args, **kwargs: subprocess.CompletedProcess(args=args, returncode=return_code, stdout=output, stderr=""),
+        )
+
+    def test_resolve_indexing_scope_uses_explicit_directory_scope(self, temp_project_dir):
+        scoped_dir = Path(temp_project_dir) / "src" / "Main"
+        scoped_dir.mkdir(parents=True)
+
+        indexing_scope = resolve_indexing_scope(temp_project_dir, active_workspace=None, explicit_scope="src/Main")
+
+        assert indexing_scope.relative_paths == ("src/Main",)
+        assert indexing_scope.display_path == "src/Main"
+        assert indexing_scope.source == "explicit_scope"
+
+    def test_resolve_indexing_scope_expands_active_workspace_solution_projects(self, monkeypatch, temp_project_dir):
+        solution_file = Path(temp_project_dir) / "Main.sln"
+        solution_file.touch()
+        self._stub_solution_listing(monkeypatch, "Project(s)\n----------\nsrc/App/App.csproj\nlibs/Core/Core.csproj\n")
+
+        indexing_scope = resolve_indexing_scope(temp_project_dir, active_workspace="Main.sln")
+
+        assert indexing_scope.relative_paths == ("src/App", "libs/Core")
+        assert indexing_scope.display_path == "Main.sln"
+        assert indexing_scope.source == "active_workspace"
+
+    def test_resolve_indexing_scope_falls_back_to_project_root_for_stale_workspace(self, temp_project_dir):
+        indexing_scope = resolve_indexing_scope(temp_project_dir, active_workspace="src/Missing/Missing.sln")
+
+        assert indexing_scope.relative_paths == ("",)
+        assert indexing_scope.display_path == "."
+        assert indexing_scope.source == "project_root"
+
+    def test_resolve_indexing_scope_rejects_invalid_explicit_file(self, temp_project_dir):
+        invalid_file = Path(temp_project_dir) / "notes.txt"
+        invalid_file.write_text("notes", encoding="utf-8")
+
+        with pytest.raises(ValueError, match="must point to a directory or a .sln, .slnx, or .csproj file"):
+            resolve_indexing_scope(temp_project_dir, active_workspace=None, explicit_scope="notes.txt")
+
+    def test_index_project_expands_solution_projects_when_gathering_files(self, monkeypatch, temp_project_dir):
+        solution_file = Path(temp_project_dir) / "Main.sln"
+        solution_file.touch()
+        self._stub_solution_listing(monkeypatch, "Project(s)\n----------\nsrc/App/App.csproj\nlibs/Core/Core.csproj\n")
+
+        gather_source_files = Mock(side_effect=[[], []])
+        language_server_manager = SimpleNamespace(save_all_caches=Mock(), stop_all=Mock())
+        project = SimpleNamespace(
+            project_root=temp_project_dir,
+            project_config=SimpleNamespace(active_workspace="Main.sln"),
+            gather_source_files=gather_source_files,
+            create_language_server_manager=lambda: language_server_manager,
+        )
+        registered_project = SimpleNamespace(get_project_instance=lambda serena_config: project)
+
+        monkeypatch.setattr("serena.cli.SerenaConfig.from_config_file", lambda: object())
+
+        ProjectCommands._index_project(registered_project, "ERROR", timeout=5)
+
+        assert gather_source_files.call_args_list == [(("src/App",),), (("libs/Core",),)]
 
 
 class TestProjectCreateHelper:
