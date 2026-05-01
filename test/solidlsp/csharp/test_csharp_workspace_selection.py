@@ -4,6 +4,7 @@ from unittest.mock import Mock, call
 
 import pytest
 
+import solidlsp.language_servers.csharp_language_server as csharp_language_server_module
 from solidlsp.language_servers.csharp_language_server import CSharpLanguageServer, resolve_selected_workspace_entry
 from solidlsp.settings import SolidLSPSettings
 
@@ -84,6 +85,27 @@ def _create_fallback_fixture(tmp_path: Path) -> CSharpFallbackFixture:
         fallback_solution=fallback_solution,
         stray_project=stray_project,
     )
+
+
+def _make_dependency_provider_stub(
+    repository_root: Path,
+    *,
+    active_workspace: str | None = None,
+    workspace_root: str | None = None,
+) -> CSharpLanguageServer.DependencyProvider:
+    provider = object.__new__(CSharpLanguageServer.DependencyProvider)
+    settings: dict[str, str] = {}
+    if active_workspace is not None:
+        settings["active_workspace"] = active_workspace
+    if workspace_root is not None:
+        settings["workspace_root"] = workspace_root
+    provider._custom_settings = SolidLSPSettings.CustomLSSettings(settings)
+    provider._repository_root_path = str(repository_root)
+    provider._ls_resources_dir = str(repository_root / ".serena")
+    Path(provider._ls_resources_dir).mkdir(exist_ok=True)
+    provider._dotnet_path = "dotnet"
+    provider._language_server_path = "roslyn.dll"
+    return provider
 
 
 @pytest.mark.csharp
@@ -171,3 +193,22 @@ class TestCSharpWorkspaceSelection:
             call("solution/open", {"solution": fixture.fallback_solution.as_uri()}),
             call("project/open", {"projects": [fixture.stray_project.as_uri()]}),
         ]
+
+    def test_dependency_provider_uses_workspace_root_override_for_launch_discovery(self, monkeypatch, tmp_path: Path) -> None:
+        fixture = _create_workspace_fixture(tmp_path)
+        provider = _make_dependency_provider_stub(
+            fixture.repository_root,
+            workspace_root="workspaces/Main",
+        )
+        discovered_roots: list[str] = []
+
+        def stub_find_solution_or_project_file(root: str) -> str:
+            discovered_roots.append(root)
+            return str(fixture.main_solution)
+
+        monkeypatch.setattr(csharp_language_server_module, "find_solution_or_project_file", stub_find_solution_or_project_file)
+
+        command = provider.create_launch_command()
+
+        assert discovered_roots == [str(fixture.main_solution.parent)]
+        assert command[:3] == ["dotnet", "roslyn.dll", "--logLevel=Information"]

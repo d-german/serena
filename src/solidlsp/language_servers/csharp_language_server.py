@@ -39,6 +39,38 @@ log = logging.getLogger(__name__)
 NUGET_ALLOWED_HOSTS = ("www.nuget.org", "nuget.org", "globalcdn.nuget.org")
 DEFAULT_CSHARP_LANGUAGE_SERVER_VERSION = "5.5.0-2.26078.4"
 
+
+def _resolve_workspace_root_override(repository_root_path: str, configured_workspace_root: str | None) -> str | None:
+    """
+    Resolve the configured workspace-root override for a project.
+    """
+    if not configured_workspace_root:
+        return None
+
+    project_root = Path(repository_root_path).resolve()
+    workspace_root = (project_root / configured_workspace_root).resolve()
+
+    try:
+        workspace_root.relative_to(project_root)
+    except ValueError:
+        log.warning(
+            "Ignoring workspace_root '%s' because it is outside the project root %s",
+            configured_workspace_root,
+            repository_root_path,
+        )
+        return None
+
+    if not workspace_root.is_dir():
+        log.warning(
+            "Ignoring workspace_root '%s' because it does not resolve to a directory under %s",
+            configured_workspace_root,
+            repository_root_path,
+        )
+        return None
+
+    return str(workspace_root)
+
+
 _RUNTIME_DEPENDENCIES = [
     RuntimeDependency(
         id="CSharpLanguageServer",
@@ -340,7 +372,10 @@ class CSharpLanguageServer(SolidLanguageServer):
                 self._repository_root_path,
                 cast(str | None, self._custom_settings.get("active_workspace")),
             )
-            workspace_root = self._get_workspace_root_override() or self._repository_root_path
+            workspace_root = _resolve_workspace_root_override(
+                self._repository_root_path,
+                cast(str | None, self._custom_settings.get("workspace_root")),
+            ) or self._repository_root_path
             solution_or_project = selected_workspace.path if selected_workspace is not None else find_solution_or_project_file(workspace_root)
 
             # Create log directory
@@ -506,32 +541,10 @@ class CSharpLanguageServer(SolidLanguageServer):
         """
         Resolve the configured workspace-root override for the current project.
         """
-        configured_workspace_root = cast(str | None, self._custom_settings.get("workspace_root"))
-        if not configured_workspace_root:
-            return None
-
-        project_root = Path(self.repository_root_path).resolve()
-        workspace_root = (project_root / configured_workspace_root).resolve()
-
-        try:
-            workspace_root.relative_to(project_root)
-        except ValueError:
-            log.warning(
-                "Ignoring workspace_root '%s' because it is outside the project root %s",
-                configured_workspace_root,
-                self.repository_root_path,
-            )
-            return None
-
-        if not workspace_root.is_dir():
-            log.warning(
-                "Ignoring workspace_root '%s' because it does not resolve to a directory under %s",
-                configured_workspace_root,
-                self.repository_root_path,
-            )
-            return None
-
-        return str(workspace_root)
+        return _resolve_workspace_root_override(
+            self.repository_root_path,
+            cast(str | None, self._custom_settings.get("workspace_root")),
+        )
 
     def _get_initialize_params(self) -> InitializeParams:
         """
