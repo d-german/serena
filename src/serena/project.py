@@ -298,6 +298,8 @@ class Project(ToStringMixin):
         self.is_newly_created = is_newly_created
         self._agent: Optional["SerenaAgent"] = None
         self._session_active_workspace: str | None = None
+        self._solution_map: "SolutionMembershipMap | None" = None
+        self._solution_map_loaded: bool = False
 
         # create .gitignore file in the project's Serena data folder if not yet present
         serena_data_gitignore_path = os.path.join(self._serena_data_folder, ".gitignore")
@@ -417,6 +419,20 @@ class Project(ToStringMixin):
 
     def path_to_serena_data_folder(self) -> str:
         return self._serena_data_folder
+
+    @property
+    def solution_map(self) -> "SolutionMembershipMap | None":
+        """The solution membership map, lazily loaded from disk.
+
+        Returns ``None`` if the map file does not exist (project not indexed or no solutions).
+        """
+        if not self._solution_map_loaded:
+            self._solution_map_loaded = True
+            map_file = os.path.join(self._serena_data_folder, "solution_map.pkl")
+            if os.path.exists(map_file):
+                from serena.solution_map import SolutionMembershipMap
+                self._solution_map = SolutionMembershipMap.load(map_file)
+        return self._solution_map
 
     def path_to_project_yml(self) -> str:
         return self.serena_config.get_project_yml_location(self.project_root)

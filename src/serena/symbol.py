@@ -753,9 +753,78 @@ class LanguageServerSymbolRetriever:
             lang_servers: Iterable[SolidLanguageServer] = [self._ls_manager.get_language_server(within_relative_path)]
         else:
             lang_servers = self._ls_manager.iter_language_servers()
+
         for lang_server in lang_servers:
-            symbol_roots = lang_server.request_full_symbol_tree(within_relative_path=within_relative_path)
-            for root in symbol_roots:
+            # attempt index-accelerated lookup when no path restriction is given
+            if within_relative_path is None and lang_server.symbol_index is not None:
+                symbols.extend(
+                    self._find_via_index(
+                        lang_server, name_path_pattern, include_kinds=include_kinds,
+                        exclude_kinds=exclude_kinds, substring_matching=substring_matching,
+                    )
+                )
+            else:
+                symbol_roots = lang_server.request_full_symbol_tree(within_relative_path=within_relative_path)
+                for root in symbol_roots:
+                    symbols.extend(
+                        LanguageServerSymbol(root).find(
+                            name_path_pattern, include_kinds=include_kinds, exclude_kinds=exclude_kinds, substring_matching=substring_matching
+                        )
+                    )
+        return symbols
+
+    def _find_via_index(
+        self,
+        lang_server: SolidLanguageServer,
+        name_path_pattern: str,
+        include_kinds: Sequence[SymbolKind] | None = None,
+        exclude_kinds: Sequence[SymbolKind] | None = None,
+        substring_matching: bool = False,
+    ) -> list[LanguageServerSymbol]:
+        """Use the precomputed symbol index to narrow the file set before matching.
+
+        Extracts the leaf symbol name from the pattern, queries the index for candidate
+        files, then loads only those files' document symbols for full pattern matching.
+
+        :param lang_server: the language server whose index to consult.
+        :param name_path_pattern: the name path pattern to match.
+        :param include_kinds: optional kind filter.
+        :param exclude_kinds: optional kind exclusion.
+        :param substring_matching: whether to use substring matching for the last segment.
+        :return: matching symbols.
+        """
+        index = lang_server.symbol_index
+        assert index is not None
+
+        # extract the last component of the pattern as the index lookup key
+        leaf_name = name_path_pattern.lstrip(NAME_PATH_SEP).rstrip(NAME_PATH_SEP).split(NAME_PATH_SEP)[-1]
+
+        # strip any overload index suffix like "[0]" for the name lookup
+        bracket_pos = leaf_name.find("[")
+        if bracket_pos >= 0:
+            leaf_name = leaf_name[:bracket_pos]
+
+        # query the index for candidate files
+        index_entries = index.lookup(leaf_name, substring_matching=substring_matching)
+        if not index_entries:
+            log.debug("Symbol index: no entries for '%s' (substring=%s)", leaf_name, substring_matching)
+            return []
+
+        # collect unique file paths from index results
+        candidate_files = {e.relative_path for e in index_entries}
+        log.debug("Symbol index: '%s' → %d candidate files (from %d index entries)", leaf_name, len(candidate_files), len(index_entries))
+
+        # load document symbols only for candidate files and run full pattern matching
+        symbols: list[LanguageServerSymbol] = []
+        for file_path in candidate_files:
+            try:
+                doc_symbols = lang_server.request_document_symbols(file_path)
+            except Exception:
+                log.debug("Failed to load document symbols for %s, skipping", file_path)
+                continue
+            if doc_symbols is None:
+                continue
+            for root in doc_symbols.root_symbols:
                 symbols.extend(
                     LanguageServerSymbol(root).find(
                         name_path_pattern, include_kinds=include_kinds, exclude_kinds=exclude_kinds, substring_matching=substring_matching

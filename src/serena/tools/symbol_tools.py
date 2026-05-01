@@ -22,6 +22,34 @@ from serena.util.text_utils import find_text_coordinates
 from solidlsp.ls_types import SymbolKind
 
 
+def _check_solution_mismatch(project: "Project", relative_path: str) -> str | None:
+    """Check if the target file belongs to the active workspace's solution.
+
+    :param project: the active project.
+    :param relative_path: file path relative to the project root.
+    :return: a warning message if the file is in a different solution, or None if OK.
+    """
+    solution_map = getattr(project, "solution_map", None)
+    if solution_map is None or solution_map.total_solutions == 0:
+        return None
+
+    active_workspace = project.get_active_workspace() or ""
+    file_solutions = solution_map.solutions_for_file(relative_path)
+    if not file_solutions:
+        return None  # file not in any known solution — proceed normally
+
+    if active_workspace in file_solutions:
+        return None  # file is in the active solution — all good
+
+    suggested = file_solutions[0]
+    return (
+        f"Warning: The file '{relative_path}' belongs to solution '{suggested}', "
+        f"but the active workspace is '{active_workspace}'. "
+        f"Semantic queries (references, declarations, implementations) may return incomplete results. "
+        f"Switch to the correct solution with set_active_workspace('{suggested}') first."
+    )
+
+
 class RestartLanguageServerTool(Tool, ToolMarkerOptional):
     """Restarts the language server(s)."""
 
@@ -237,7 +265,53 @@ class FindSymbolTool(Tool, ToolMarkerSymbolicRead):
 
         grouped_symbol_dicts = self.symbol_dict_grouper.group(symbol_dicts)
         result = self._to_json(grouped_symbol_dicts)
+
+        # append workspace switch suggestion if symbols are in a different solution
+        workspace_hint = self._get_workspace_switch_hint(symbols)
+        if workspace_hint:
+            result += "\n" + workspace_hint
+
         return self._limit_length(result, max_answer_chars, shortened_result_factories=[create_short_result_relative_path_to_name_paths])
+
+    def _get_workspace_switch_hint(self, symbols: list[LanguageServerSymbol]) -> str:
+        """Check if any found symbols belong to a different solution than the active workspace.
+
+        :param symbols: the symbols found by find_symbol.
+        :return: a hint string suggesting workspace switch, or empty string if not needed.
+        """
+        solution_map = self.project.solution_map
+        if solution_map is None or solution_map.total_solutions == 0:
+            return ""
+
+        active_workspace = self.project.get_active_workspace() or ""
+
+        # collect solutions for all found symbols' files
+        other_solutions: dict[str, set[str]] = {}  # solution → set of symbol names
+        for symbol in symbols:
+            rel_path = symbol.location.relative_path
+            if not rel_path:
+                continue
+            file_solutions = solution_map.solutions_for_file(rel_path)
+            for sol in file_solutions:
+                if sol != active_workspace:
+                    other_solutions.setdefault(sol, set()).add(symbol.name)
+
+        if not other_solutions:
+            return ""
+
+        # format suggestion
+        parts = []
+        for sol, names in sorted(other_solutions.items()):
+            name_list = ", ".join(sorted(names)[:5])
+            if len(names) > 5:
+                name_list += f" (+{len(names) - 5} more)"
+            parts.append(f"  {sol}: {name_list}")
+
+        hint = "Note: Some symbols belong to a different solution than the active workspace.\n"
+        hint += "For semantic queries (references, declarations), consider switching:\n"
+        hint += "\n".join(parts)
+        hint += "\nUse set_active_workspace(<solution_path>) to switch."
+        return hint
 
 
 class FindReferencingSymbolsTool(Tool, ToolMarkerSymbolicRead):
@@ -269,6 +343,9 @@ class FindReferencingSymbolsTool(Tool, ToolMarkerSymbolicRead):
         :param max_answer_chars: same as in the `find_symbol` tool.
         :return: a list of JSON objects with the symbols referencing the requested symbol
         """
+        mismatch_warning = _check_solution_mismatch(self.project, relative_path)
+        if mismatch_warning:
+            return mismatch_warning
         include_body = False  # It is probably never a good idea to include the body of the referencing symbols
         parsed_include_kinds: Sequence[SymbolKind] | None = [SymbolKind(k) for k in include_kinds] if include_kinds else None
         parsed_exclude_kinds: Sequence[SymbolKind] | None = [SymbolKind(k) for k in exclude_kinds] if exclude_kinds else None
@@ -356,6 +433,9 @@ class FindImplementationsTool(Tool, ToolMarkerSymbolicRead):
         :param max_answer_chars: same as in the `find_symbol` tool.
         :return: a list of JSON objects with the symbols implementing the requested symbol
         """
+        mismatch_warning = _check_solution_mismatch(self.project, relative_path)
+        if mismatch_warning:
+            return mismatch_warning
         include_body = False
         parsed_include_kinds: Sequence[SymbolKind] | None = [SymbolKind(k) for k in include_kinds] if include_kinds else None
         parsed_exclude_kinds: Sequence[SymbolKind] | None = [SymbolKind(k) for k in exclude_kinds] if exclude_kinds else None
@@ -409,6 +489,9 @@ class FindDeclarationTool(Tool, ToolMarkerSymbolicRead):
         :param include_body: whether to include the symbol's body in the result. Default False.
         :param include_info: whether to include additional info (hover-like). Default False.
         """
+        mismatch_warning = _check_solution_mismatch(self.project, relative_path)
+        if mismatch_warning:
+            return mismatch_warning
         symbol_retriever = self.create_language_server_symbol_retriever()
         relative_path = self._sanitize_input_param(relative_path)
         regex = self._sanitize_input_param(regex)
@@ -715,3 +798,72 @@ class SafeDeleteSymbol(Tool, ToolMarkerSymbolicEdit):
         code_editor = self.create_ls_code_editor()
         code_editor.delete_symbol(symbol_name_path, relative_file_path=symbol_rel_path)
         return SUCCESS_RESULT
+
+
+class SearchSymbolIndexTool(Tool, ToolMarkerSymbolicRead):
+    """Queries the precomputed symbol index for fast, zero-LSP symbol lookup.
+
+    The symbol index is built during ``project index`` and maps symbol names to their
+    file locations. This tool returns results instantly without any language server work.
+    """
+
+    # noinspection PyDefaultArgument
+    def apply(
+        self,
+        query: str,
+        substring_matching: bool = True,
+        kind_filter: list[int] = [],  # noqa: B006
+        max_results: int = 50,
+        max_answer_chars: int = -1,
+    ) -> str:
+        """
+        Searches the precomputed symbol index for symbols matching the query.
+        This is a lightweight, zero-LSP-cost lookup that returns file locations for matching symbols.
+
+        The index is built during ``project index`` and contains all symbol names and their locations.
+        Use this tool to quickly find where a symbol is defined before using heavier tools like
+        ``find_symbol`` or ``find_declaration``.
+
+        :param query: symbol name or substring to search for.
+        :param substring_matching: If True (default), match any symbol whose name contains the query.
+            If False, only exact name matches are returned.
+        :param kind_filter: optional list of LSP symbol kind integers to filter results.
+            If not provided, all kinds are included.
+        :param max_results: maximum number of results to return. Default 50.
+        :param max_answer_chars: Max characters for the JSON result. -1 means the default from config.
+        :return: JSON list of matching symbol entries with name, name_path, relative_path, kind, line.
+        """
+        ls_manager = self.project.get_language_server_manager_or_raise()
+
+        # collect index entries from all language servers
+        all_entries = []
+        has_index = False
+        for lang_server in ls_manager.iter_language_servers():
+            index = lang_server.symbol_index
+            if index is None:
+                continue
+            has_index = True
+            entries = index.lookup(
+                query,
+                substring_matching=substring_matching,
+                kind_filter=kind_filter if kind_filter else None,
+            )
+            all_entries.extend(entries)
+
+        if not has_index:
+            return "No symbol index loaded. Run `project index` first to build the index."
+
+        if not all_entries:
+            return f"No symbols found matching '{query}'."
+
+        # cap results
+        truncated = len(all_entries) > max_results
+        entries_to_show = all_entries[:max_results]
+
+        # format results
+        result_dicts = [e.to_dict() for e in entries_to_show]
+        result = self._to_json(result_dicts)
+        if truncated:
+            result = f"Showing {max_results} of {len(all_entries)} matches. Refine your query for more specific results.\n{result}"
+
+        return self._limit_length(result, max_answer_chars)

@@ -1189,6 +1189,14 @@ class SerenaAgent:
             result_str += f"Active project: {self._active_project.project_name}\n"
             active_workspace = self._active_project.get_active_workspace() or "<none>"
             result_str += f"Active workspace: {active_workspace}\n"
+
+            # solution membership map summary
+            solution_map = self._active_project.solution_map
+            if solution_map is not None and solution_map.total_solutions > 0:
+                result_str += f"Solution map: {solution_map.total_solutions} solutions, {solution_map.total_project_dirs} project directories\n"
+                for entry in solution_map.iter_entries():
+                    marker = " ← active" if entry.solution_path == active_workspace else ""
+                    result_str += f"  {entry.solution_path} ({len(entry.project_directories)} projects){marker}\n"
         else:
             result_str += "No active project\n"
         result_str += f"Language backend: {self._language_backend.value}"

@@ -848,6 +848,9 @@ class ProjectCommands(AutoRegisteringGroup):
             click.echo(f"Indexed files per language: {dict_string(reported_language_file_counts, brackets=None)}")
             ls_mgr.save_all_caches()
 
+            # build and save solution membership map
+            ProjectCommands._build_solution_map(proj)
+
             if len(files_failed) > 0:
                 os.makedirs(os.path.dirname(log_file), exist_ok=True)
                 with open(log_file, "w") as f:
@@ -857,6 +860,46 @@ class ProjectCommands(AutoRegisteringGroup):
                 click.echo(f"Failed to index {len(files_failed)} files, see:\n{log_file}")
         finally:
             ls_mgr.stop_all()
+
+    @staticmethod
+    def _build_solution_map(proj: "Project") -> None:
+        """Build and persist a :class:`SolutionMembershipMap` for the project.
+
+        Scans for ``.sln`` and ``.slnx`` files, resolves their member project directories
+        via ``dotnet sln list``, and saves the map to the project's ``.serena`` data folder.
+        """
+        from serena.solution_map import SolutionMembershipMap
+        from serena.workspace_selection import _resolve_solution_project_directories
+
+        project_root = Path(proj.project_root)
+        smap = SolutionMembershipMap()
+
+        # find all solution files
+        solution_files: list[Path] = []
+        for suffix in (".sln", ".slnx"):
+            solution_files.extend(project_root.rglob(f"*{suffix}"))
+
+        if not solution_files:
+            log.info("No solution files found, skipping solution map build")
+            return
+
+        click.echo(f"Building solution map from {len(solution_files)} solution file(s)…")
+        for sol_path in solution_files:
+            try:
+                project_dirs = _resolve_solution_project_directories(str(project_root), sol_path)
+                rel_sol = str(sol_path.relative_to(project_root)).replace(os.sep, "/")
+                smap.add(rel_sol, list(project_dirs))
+                log.info("Solution %s: %d project directories", rel_sol, len(project_dirs))
+            except Exception as e:
+                rel_sol = str(sol_path.relative_to(project_root))
+                log.warning("Failed to resolve projects for %s: %s", rel_sol, e)
+
+        if smap.total_solutions > 0:
+            map_file = os.path.join(proj.path_to_serena_data_folder(), "solution_map.pkl")
+            smap.save(map_file)
+            click.echo(f"Solution map: {smap.total_solutions} solutions, {smap.total_project_dirs} project directories")
+        else:
+            click.echo("No valid solutions found for solution map")
 
     @staticmethod
     @click.command(

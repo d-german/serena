@@ -122,13 +122,26 @@ class ListWorkspaceEntriesTool(Tool):
     Lists candidate C# workspace entries under the active project root.
     """
 
-    def apply(self, kind: str = "csharp", include_projects: bool = True) -> str:
+    def apply(
+        self,
+        kind: str = "csharp",
+        include_projects: bool = True,
+        name_contains: str = "",
+        max_entries: int = -1,
+        max_answer_chars: int = -1,
+    ) -> str:
         """
         Lists candidate workspace entries for the active project.
 
         :param kind: workspace kind to list. Currently only 'csharp' is supported.
-        :param include_projects: whether to include .csproj files in addition to solutions
+        :param include_projects: whether to include .csproj files in addition to solutions.
+        :param name_contains: optional substring filter — only entries whose path contains this string are returned.
+        :param max_entries: maximum number of entries to return. -1 means no limit.
+        :param max_answer_chars: if the output is longer than this number of characters,
+            the tool returns a shortened result.
+            -1 means the default value from the config will be used.
         """
+        # validate workspace-selection inputs
         if kind != "csharp":
             raise ValueError("Only kind='csharp' is currently supported.")
 
@@ -136,12 +149,38 @@ class ListWorkspaceEntriesTool(Tool):
         if not _project_supports_csharp_workspace_selection(project):
             raise ValueError("Workspace selection is currently only supported for Roslyn-based C# projects.")
 
+        # gather and annotate workspace entries
         active_workspace = project.get_active_workspace()
         selected_path = Path(active_workspace).as_posix() if active_workspace else None
         entries = _iter_csharp_workspace_entries(project.project_root, include_projects)
         for entry in entries:
             entry["selected"] = entry["path"] == selected_path  # type: ignore[index]
-        return self._to_json(entries)
+
+        # apply optional filters
+        if name_contains:
+            name_lower = name_contains.lower()
+            entries = [e for e in entries if name_lower in e["path"].lower()]
+        if max_entries > 0:
+            entries = entries[:max_entries]
+
+        # prepare progressively shorter summaries
+        def make_paths_only() -> str:
+            return "Workspace entry paths:\n" + self._to_json([entry["path"] for entry in entries])
+
+        def make_summary() -> str:
+            solution_count = sum(1 for entry in entries if entry["kind"] == "solution")
+            project_count = len(entries) - solution_count
+            summary = {
+                "total_entries": len(entries),
+                "solution_count": solution_count,
+                "project_count": project_count,
+                "selected_path": selected_path,
+            }
+            return "Workspace entry summary:\n" + self._to_json(summary)
+
+        # serialize and shorten if needed
+        result = self._to_json(entries)
+        return self._limit_length(result, max_answer_chars, shortened_result_factories=[make_paths_only, make_summary])
 
 
 class SetActiveWorkspaceTool(Tool):

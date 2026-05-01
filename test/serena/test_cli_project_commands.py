@@ -319,11 +319,14 @@ class TestProjectIndexingScope:
         gather_source_files = Mock(side_effect=[[], []])
         language_server_manager = SimpleNamespace(save_all_caches=Mock(), stop_all=Mock())
         create_language_server_manager = Mock(return_value=language_server_manager)
+        serena_data_folder = os.path.join(temp_project_dir, ".serena")
+        os.makedirs(serena_data_folder, exist_ok=True)
         project = SimpleNamespace(
             project_root=temp_project_dir,
             gather_source_files=gather_source_files,
             get_active_workspace=lambda: "Main.sln",
             create_language_server_manager=create_language_server_manager,
+            path_to_serena_data_folder=lambda: serena_data_folder,
         )
         registered_project = SimpleNamespace(get_project_instance=lambda serena_config: project)
 
@@ -339,6 +342,8 @@ class TestProjectIndexingScope:
         solution_file.touch()
         self._stub_solution_listing(monkeypatch, "Project(s)\n----------\nsrc/App/App.csproj\n")
 
+        serena_data_folder = os.path.join(temp_project_dir, ".serena")
+        os.makedirs(serena_data_folder, exist_ok=True)
         language_server_manager = SimpleNamespace(save_all_caches=Mock(), stop_all=Mock())
         create_language_server_manager = Mock(return_value=language_server_manager)
         project = SimpleNamespace(
@@ -346,6 +351,7 @@ class TestProjectIndexingScope:
             gather_source_files=Mock(return_value=[]),
             get_active_workspace=lambda: "Main.sln",
             create_language_server_manager=create_language_server_manager,
+            path_to_serena_data_folder=lambda: serena_data_folder,
         )
         registered_project = SimpleNamespace(get_project_instance=lambda serena_config: project)
 

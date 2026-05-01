@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -14,6 +15,7 @@ class StubAgent:
     def __init__(self, project: Project):
         self._project = project
         self.reset_calls = 0
+        self.serena_config = SimpleNamespace(default_max_tool_answer_chars=50000)
 
     def get_active_project_or_raise(self) -> Project:
         return self._project
@@ -106,3 +108,56 @@ class TestWorkspaceConfigTools:
 
         with pytest.raises(ValueError, match="inside the active project root"):
             SetActiveWorkspaceTool(StubAgent(project)).apply(str(outside_file))
+
+    def test_list_workspace_entries_shortens_to_paths_only(self, tmp_path: Path) -> None:
+        """When max_answer_chars is too small for the full JSON, paths-only is returned."""
+        project = _create_csharp_project(tmp_path)
+        project.project_config.active_workspace = "src/Main/Main.sln"
+        agent = StubAgent(project)
+        # Full JSON is ~269 chars; paths-only candidate with "too long" prefix is ~198 chars
+        # Set limit so full doesn't fit but paths-only candidate does
+        result = ListWorkspaceEntriesTool(agent).apply(max_answer_chars=210)
+        assert "Workspace entry paths:" in result
+        assert "src/Main/Main.sln" in result
+
+    def test_list_workspace_entries_shortens_to_too_long_message(self, tmp_path: Path) -> None:
+        """When all tiers are too long, the fallback 'too long' message is returned."""
+        project = _create_csharp_project(tmp_path)
+        project.project_config.active_workspace = "src/Main/Main.sln"
+        agent = StubAgent(project)
+        # Set limit very small so no candidate fits
+        result = ListWorkspaceEntriesTool(agent).apply(max_answer_chars=50)
+        assert "too long" in result
+        assert "Workspace entry paths:" not in result
+
+    def test_list_workspace_entries_no_shortening_for_large_limit(self, tmp_path: Path) -> None:
+        """When max_answer_chars is large enough, full JSON is returned."""
+        project = _create_csharp_project(tmp_path)
+        project.project_config.active_workspace = "src/Main/Main.sln"
+        agent = StubAgent(project)
+        entries = json.loads(ListWorkspaceEntriesTool(agent).apply(max_answer_chars=50000))
+        assert len(entries) == 3
+        assert {"path": "src/Main/Main.sln", "kind": "solution", "selected": True} in entries
+
+
+    def test_list_workspace_entries_name_contains_filter(self, tmp_path: Path) -> None:
+        """name_contains filters entries by substring match."""
+        project = _create_csharp_project(tmp_path)
+        agent = StubAgent(project)
+        entries = json.loads(ListWorkspaceEntriesTool(agent).apply(name_contains="Main"))
+        assert len(entries) == 2  # Main.sln and Main.csproj
+        assert all("Main" in e["path"] for e in entries)
+
+    def test_list_workspace_entries_max_entries(self, tmp_path: Path) -> None:
+        """max_entries caps the number of returned entries."""
+        project = _create_csharp_project(tmp_path)
+        agent = StubAgent(project)
+        entries = json.loads(ListWorkspaceEntriesTool(agent).apply(max_entries=1))
+        assert len(entries) == 1
+
+    def test_list_workspace_entries_name_contains_case_insensitive(self, tmp_path: Path) -> None:
+        """name_contains is case-insensitive."""
+        project = _create_csharp_project(tmp_path)
+        agent = StubAgent(project)
+        entries = json.loads(ListWorkspaceEntriesTool(agent).apply(name_contains="main"))
+        assert len(entries) == 2

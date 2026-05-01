@@ -47,6 +47,7 @@ from solidlsp.lsp_protocol_handler.server import (
 )
 from solidlsp.settings import SolidLSPSettings
 from solidlsp.util.cache import load_cache, save_cache
+from solidlsp.util.symbol_index import SymbolIndex, SymbolIndexEntry
 
 RawDocumentSymbol = Union[DocumentSymbol, SymbolInformation]
 """
@@ -352,6 +353,7 @@ class SolidLanguageServer(ABC):
     RAW_DOCUMENT_SYMBOL_CACHE_FILENAME_LEGACY_FALLBACK = "document_symbols_cache_v23-06-25.pkl"
     DOCUMENT_SYMBOL_CACHE_VERSION = 4
     DOCUMENT_SYMBOL_CACHE_FILENAME = "document_symbols.pkl"
+    SYMBOL_INDEX_CACHE_FILENAME = "symbol_index.pkl"
 
     # Directories that should always be ignored regardless of language:
     # VCS internals, virtual environments, caches, and serena's own data.
@@ -534,6 +536,9 @@ class SolidLanguageServer(ABC):
         """maps relative file paths to a tuple of (file_content_hash, document_symbols)"""
         self._document_symbols_cache_is_modified: bool = False
         self._load_document_symbols_cache()
+        # * precomputed symbol index (built from document symbols cache)
+        self._symbol_index: SymbolIndex | None = None
+        self._load_symbol_index()
 
         self.server_started = False
         if config.trace_lsp_communication:
@@ -2867,6 +2872,103 @@ class SolidLanguageServer(ABC):
                 e,
             )
 
+    def _build_symbol_index(self) -> SymbolIndex:
+        """Build a :class:`SymbolIndex` from the current document symbols cache.
+
+        Walks each cached ``DocumentSymbols`` tree and flattens all symbols into
+        ``SymbolIndexEntry`` records suitable for fast name-based lookup.
+
+        :return: the populated symbol index.
+        """
+        index = SymbolIndex()
+
+        for relative_path, (_content_hash, doc_symbols) in self._document_symbols_cache.items():
+            self._flatten_symbols_into_index(index, relative_path, doc_symbols.root_symbols, parent_name_path=None)
+
+        log.info("Built symbol index: %d entries across %d files (%d distinct names)",
+                 index.total_entries, index.total_files, index.total_symbols)
+        return index
+
+    @staticmethod
+    def _flatten_symbols_into_index(
+        index: SymbolIndex,
+        relative_path: str,
+        symbols: list[ls_types.UnifiedSymbolInformation],
+        parent_name_path: str | None,
+    ) -> None:
+        """Recursively flatten unified symbols into index entries.
+
+        :param index: the index to populate.
+        :param relative_path: file path relative to the project root.
+        :param symbols: list of unified symbols at the current nesting level.
+        :param parent_name_path: name path of the parent symbol, or ``None`` for root symbols.
+        """
+        for symbol in symbols:
+            name = symbol["name"]
+            kind = symbol.get("kind", 0)
+
+            # build name path component (with overload index if present)
+            overload_idx = symbol.get("overload_idx")
+            name_component = f"{name}[{overload_idx}]" if overload_idx is not None else name
+            name_path = f"{parent_name_path}/{name_component}" if parent_name_path else name_component
+
+            # extract start line from range or selectionRange
+            line = 0
+            if "range" in symbol:
+                line = symbol["range"]["start"]["line"]
+            elif "selectionRange" in symbol:
+                line = symbol["selectionRange"]["start"]["line"]
+
+            entry = SymbolIndexEntry(
+                name=name,
+                name_path=name_path,
+                relative_path=relative_path,
+                kind=kind,
+                line=line,
+                parent_name_path=parent_name_path,
+            )
+            index.add(entry)
+
+            # recurse into children
+            children = symbol.get("children", [])
+            if children:
+                SolidLanguageServer._flatten_symbols_into_index(index, relative_path, children, parent_name_path=name_path)
+
+    def _save_symbol_index(self) -> None:
+        """Build and persist the symbol index derived from the document symbols cache."""
+        if not self._document_symbols_cache:
+            log.debug("No document symbols cache to build symbol index from")
+            return
+
+        cache_file = self.cache_dir / self.SYMBOL_INDEX_CACHE_FILENAME
+        try:
+            self._symbol_index = self._build_symbol_index()
+            self._symbol_index.save(str(cache_file), extra_version=self._document_symbols_cache_version())
+        except Exception as e:
+            log.error("Failed to save symbol index to %s: %s", cache_file, e)
+
+    def _load_symbol_index(self) -> None:
+        """Load the prebuilt symbol index from disk if available.
+
+        Sets ``_symbol_index`` to the loaded index, or leaves it as ``None``
+        if the index file is missing, corrupt, or version-mismatched.
+        """
+        cache_file = self.cache_dir / self.SYMBOL_INDEX_CACHE_FILENAME
+        if not cache_file.exists():
+            log.debug("No symbol index cache file found at %s", cache_file)
+            return
+
+        try:
+            self._symbol_index = SymbolIndex.load(str(cache_file), extra_version=self._document_symbols_cache_version())
+            if self._symbol_index is not None:
+                log.info("Loaded symbol index: %d entries across %d files (%d distinct names)",
+                         self._symbol_index.total_entries, self._symbol_index.total_files, self._symbol_index.total_symbols)
+            else:
+                log.info("Symbol index at %s is outdated or version-mismatched, will be rebuilt on next save", cache_file)
+        except Exception as e:
+            log.warning("Failed to load symbol index from %s: %s", cache_file, e)
+            self._symbol_index = None
+
     def _load_document_symbols_cache(self) -> None:
         cache_file = self.cache_dir / self.DOCUMENT_SYMBOL_CACHE_FILENAME
         if cache_file.exists():
@@ -2887,6 +2989,16 @@ class SolidLanguageServer(ABC):
     def save_cache(self) -> None:
         self._save_raw_document_symbols_cache()
         self._save_document_symbols_cache()
+        self._save_symbol_index()
+
+    @property
+    def symbol_index(self) -> SymbolIndex | None:
+        """The precomputed symbol index, if available.
+
+        Built from the document symbols cache during ``save_cache()`` or loaded
+        from a persisted index file during startup.
+        """
+        return self._symbol_index
 
     def request_workspace_symbol(self, query: str) -> list[ls_types.UnifiedSymbolInformation] | None:
         """
