@@ -20,10 +20,17 @@ class ResolvedWorkspaceEntry:
 
 
 @dataclass(frozen=True)
+class CSharpWorkspaceSelectionSettings:
+    active_workspace: str | None = None
+    workspace_root: str | None = None
+
+
+@dataclass(frozen=True)
 class IndexingScope:
     relative_paths: tuple[str, ...]
     display_path: str
     source: Literal["explicit_scope", "active_workspace", "project_root"]
+    csharp_workspace_selection: CSharpWorkspaceSelectionSettings | None = None
 
 
 def resolve_active_workspace_entry(project_root_path: str | Path, active_workspace: str | None) -> ResolvedWorkspaceEntry | None:
@@ -117,17 +124,30 @@ def _resolve_explicit_indexing_scope(project_root_path: str | Path, explicit_sco
 
     # resolving the indexing roots
     if selected_path.is_dir():
-        relative_paths = (_relative_path_from_root(project_root, selected_path),)
+        relative_directory = _relative_path_from_root(project_root, selected_path)
+        relative_paths = (relative_directory,)
+        csharp_workspace_selection = CSharpWorkspaceSelectionSettings(workspace_root=relative_directory)
     elif selected_path.is_file() and selected_path.suffix.lower() == ".csproj":
         relative_paths = (_relative_path_from_root(project_root, selected_path.parent),)
+        csharp_workspace_selection = CSharpWorkspaceSelectionSettings(
+            active_workspace=_relative_path_from_root(project_root, selected_path)
+        )
     elif selected_path.is_file() and selected_path.suffix.lower() in (".sln", ".slnx"):
         relative_paths = _resolve_solution_project_directories(project_root, selected_path)
+        csharp_workspace_selection = CSharpWorkspaceSelectionSettings(
+            active_workspace=_relative_path_from_root(project_root, selected_path)
+        )
     else:
         raise ValueError(
             f"Indexing scope '{explicit_scope}' must point to a directory or a .sln, .slnx, or .csproj file."
         )
 
-    return IndexingScope(relative_paths=relative_paths, display_path=explicit_scope, source="explicit_scope")
+    return IndexingScope(
+        relative_paths=relative_paths,
+        display_path=explicit_scope,
+        source="explicit_scope",
+        csharp_workspace_selection=csharp_workspace_selection,
+    )
 
 
 def _resolve_workspace_indexing_scope(
@@ -135,12 +155,17 @@ def _resolve_workspace_indexing_scope(
     workspace_entry: ResolvedWorkspaceEntry,
     active_workspace: str,
 ) -> IndexingScope:
+    # normalizing the selected workspace path
+    normalized_active_workspace = _relative_path_from_root(project_root_path, workspace_entry.path)
+    csharp_workspace_selection = CSharpWorkspaceSelectionSettings(active_workspace=normalized_active_workspace)
+
     # reusing project directories for selected projects
     if workspace_entry.kind == "project":
         return IndexingScope(
             relative_paths=(_relative_path_from_root(project_root_path, workspace_entry.workspace_root),),
             display_path=active_workspace,
             source="active_workspace",
+            csharp_workspace_selection=csharp_workspace_selection,
         )
 
     # expanding selected solutions to member project directories
@@ -148,6 +173,7 @@ def _resolve_workspace_indexing_scope(
         relative_paths=_resolve_solution_project_directories(project_root_path, Path(workspace_entry.path)),
         display_path=active_workspace,
         source="active_workspace",
+        csharp_workspace_selection=csharp_workspace_selection,
     )
 
 

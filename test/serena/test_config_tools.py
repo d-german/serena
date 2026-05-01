@@ -55,6 +55,7 @@ class TestWorkspaceConfigTools:
         result = SetActiveWorkspaceTool(agent).apply("src/Main/Main.sln")
         reloaded = Project.load(tmp_path, project.serena_config)
 
+        assert project.get_active_workspace() == "src/Main/Main.sln"
         assert project.project_config.active_workspace == "src/Main/Main.sln"
         assert "active_workspace" in project.project_config._local_override_keys
         assert reloaded.project_config.active_workspace == "src/Main/Main.sln"
@@ -62,15 +63,39 @@ class TestWorkspaceConfigTools:
         assert agent.reset_calls == 1
         assert "src/Main/Main.sln" in result
 
+    def test_set_active_workspace_creates_project_local_when_missing(self, tmp_path: Path) -> None:
+        project = _create_csharp_project(tmp_path)
+        project_local_path = tmp_path / ".serena" / ProjectConfig.SERENA_LOCAL_PROJECT_FILE
+        project_local_path.unlink()
+
+        SetActiveWorkspaceTool(StubAgent(project)).apply("src/Main/Main.sln", restart=False)
+        reloaded = Project.load(tmp_path, project.serena_config)
+
+        assert project_local_path.exists()
+        assert reloaded.project_config.active_workspace == "src/Main/Main.sln"
+        assert "active_workspace" in reloaded.project_config._local_override_keys
+
     def test_set_active_workspace_session_mode_does_not_write_to_disk(self, tmp_path: Path) -> None:
         project = _create_csharp_project(tmp_path)
         agent = StubAgent(project)
         SetActiveWorkspaceTool(agent).apply("src/Main/Main.sln", persist_mode="session", restart=False)
+        project.add_language(Language.TYPESCRIPT)
         reloaded = Project.load(tmp_path, project.serena_config)
 
-        assert project.project_config.active_workspace == "src/Main/Main.sln"
+        assert project.get_active_workspace() == "src/Main/Main.sln"
+        assert project.project_config.active_workspace is None
         assert reloaded.project_config.active_workspace is None
+        assert Language.TYPESCRIPT in reloaded.project_config.languages
         assert agent.reset_calls == 0
+
+    def test_set_active_workspace_rejects_omnisharp_projects(self, tmp_path: Path) -> None:
+        (tmp_path / "Main.sln").touch()
+        serena_config = create_default_serena_config()
+        ProjectConfig.autogenerate(tmp_path, serena_config, languages=[Language.CSHARP_OMNISHARP], save_to_disk=True)
+        project = Project.load(tmp_path, serena_config)
+
+        with pytest.raises(ValueError, match="Roslyn-based C# projects"):
+            SetActiveWorkspaceTool(StubAgent(project)).apply("Main.sln", restart=False)
 
     def test_set_active_workspace_rejects_path_outside_project_root(self, tmp_path: Path) -> None:
         project = _create_csharp_project(tmp_path)

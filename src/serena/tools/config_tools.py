@@ -72,7 +72,7 @@ class GetCurrentConfigTool(Tool):
 
 
 def _project_supports_csharp_workspace_selection(project) -> bool:
-    return Language.CSHARP in project.project_config.languages or Language.CSHARP_OMNISHARP in project.project_config.languages
+    return Language.CSHARP in project.project_config.languages
 
 
 
@@ -134,9 +134,10 @@ class ListWorkspaceEntriesTool(Tool):
 
         project = self.project
         if not _project_supports_csharp_workspace_selection(project):
-            raise ValueError("Workspace selection is currently only supported for C# projects.")
+            raise ValueError("Workspace selection is currently only supported for Roslyn-based C# projects.")
 
-        selected_path = Path(project.project_config.active_workspace).as_posix() if project.project_config.active_workspace else None
+        active_workspace = project.get_active_workspace()
+        selected_path = Path(active_workspace).as_posix() if active_workspace else None
         entries = _iter_csharp_workspace_entries(project.project_root, include_projects)
         for entry in entries:
             entry["selected"] = entry["path"] == selected_path  # type: ignore[index]
@@ -161,15 +162,10 @@ class SetActiveWorkspaceTool(Tool):
 
         project = self.project
         if not _project_supports_csharp_workspace_selection(project):
-            raise ValueError("Workspace selection is currently only supported for C# projects.")
+            raise ValueError("Workspace selection is currently only supported for Roslyn-based C# projects.")
 
         relative_path, absolute_path = _resolve_workspace_path(project.project_root, path)
-        project.project_config.active_workspace = relative_path
-
-        if persist_mode == "project_local":
-            if "active_workspace" not in project.project_config._local_override_keys:
-                project.project_config._local_override_keys.append("active_workspace")
-            project.save_config()
+        project.set_active_workspace(relative_path, persist_mode)
 
         if restart:
             self.agent.reset_language_server_manager()

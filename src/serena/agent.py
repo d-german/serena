@@ -1187,7 +1187,7 @@ class SerenaAgent:
         result_str += f"Loglevel: {self.serena_config.log_level}, trace_lsp_communication={self.serena_config.trace_lsp_communication}\n"
         if self._active_project is not None:
             result_str += f"Active project: {self._active_project.project_name}\n"
-            active_workspace = self._active_project.project_config.active_workspace or "<none>"
+            active_workspace = self._active_project.get_active_workspace() or "<none>"
             result_str += f"Active workspace: {active_workspace}\n"
         else:
             result_str += "No active project\n"

@@ -340,7 +340,8 @@ class CSharpLanguageServer(SolidLanguageServer):
                 self._repository_root_path,
                 cast(str | None, self._custom_settings.get("active_workspace")),
             )
-            solution_or_project = selected_workspace.path if selected_workspace is not None else find_solution_or_project_file(self._repository_root_path)
+            workspace_root = self._get_workspace_root_override() or self._repository_root_path
+            solution_or_project = selected_workspace.path if selected_workspace is not None else find_solution_or_project_file(workspace_root)
 
             # Create log directory
             log_dir = Path(self._ls_resources_dir) / "logs"
@@ -352,6 +353,8 @@ class CSharpLanguageServer(SolidLanguageServer):
             # The language server will discover the solution/project from the workspace root
             if selected_workspace is not None:
                 log.info(f"Using configured workspace entry: {selected_workspace.path}")
+            elif workspace_root != self._repository_root_path:
+                log.info(f"Using configured workspace root: {workspace_root}")
             elif solution_or_project:
                 log.info(f"Found solution/project file: {solution_or_project}")
             else:
@@ -499,12 +502,47 @@ class CSharpLanguageServer(SolidLanguageServer):
             cast(str | None, self._custom_settings.get("active_workspace")),
         )
 
+    def _get_workspace_root_override(self) -> str | None:
+        """
+        Resolve the configured workspace-root override for the current project.
+        """
+        configured_workspace_root = cast(str | None, self._custom_settings.get("workspace_root"))
+        if not configured_workspace_root:
+            return None
+
+        project_root = Path(self.repository_root_path).resolve()
+        workspace_root = (project_root / configured_workspace_root).resolve()
+
+        try:
+            workspace_root.relative_to(project_root)
+        except ValueError:
+            log.warning(
+                "Ignoring workspace_root '%s' because it is outside the project root %s",
+                configured_workspace_root,
+                self.repository_root_path,
+            )
+            return None
+
+        if not workspace_root.is_dir():
+            log.warning(
+                "Ignoring workspace_root '%s' because it does not resolve to a directory under %s",
+                configured_workspace_root,
+                self.repository_root_path,
+            )
+            return None
+
+        return str(workspace_root)
+
     def _get_initialize_params(self) -> InitializeParams:
         """
         Returns the initialize params for the Microsoft.CodeAnalysis.LanguageServer.
         """
         selected_workspace = self._get_selected_workspace_entry()
-        workspace_root = selected_workspace.workspace_root if selected_workspace is not None else self.repository_root_path
+        workspace_root = (
+            selected_workspace.workspace_root
+            if selected_workspace is not None
+            else self._get_workspace_root_override() or self.repository_root_path
+        )
         root_uri = PathUtils.path_to_uri(workspace_root)
         root_name = os.path.basename(workspace_root)
         return cast(

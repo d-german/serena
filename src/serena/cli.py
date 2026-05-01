@@ -811,15 +811,17 @@ class ProjectCommands(AutoRegisteringGroup):
         serena_config = SerenaConfig.from_config_file()
         proj = registered_project.get_project_instance(serena_config=serena_config)
         click.echo(f"Indexing symbols in {proj} …")
-        ls_mgr = proj.create_language_server_manager()
+
+        indexing_scope = resolve_indexing_scope(
+            proj.project_root,
+            active_workspace=proj.get_active_workspace(),
+            explicit_scope=scope,
+        )
+        ls_mgr = proj.create_language_server_manager(
+            csharp_workspace_selection=indexing_scope.csharp_workspace_selection
+        )
         try:
             log_file = os.path.join(proj.project_root, ".serena", "logs", "indexing.txt")
-
-            indexing_scope = resolve_indexing_scope(
-                proj.project_root,
-                active_workspace=proj.project_config.active_workspace,
-                explicit_scope=scope,
-            )
             files = []
             for relative_path in indexing_scope.relative_paths:
                 files.extend(proj.gather_source_files(relative_path))

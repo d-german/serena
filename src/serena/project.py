@@ -12,6 +12,7 @@ from sensai.util.logging import LogTime
 from sensai.util.string import TextBuilder, ToStringMixin
 
 from serena.config.serena_config import (
+    PROJECT_LOCAL_TEMPLATE_FILE,
     ProjectConfig,
     SerenaConfig,
     SerenaPaths,
@@ -20,6 +21,7 @@ from serena.constants import SERENA_FILE_ENCODING
 from serena.ls_manager import LanguageServerFactory, LanguageServerManager
 from serena.util.file_system import GitignoreParser, match_path
 from serena.util.text_utils import ContentReplacer, MatchedConsecutiveLines, search_files
+from serena.workspace_selection import CSharpWorkspaceSelectionSettings
 from solidlsp import SolidLanguageServer
 from solidlsp.ls_config import Language
 from solidlsp.ls_utils import FileUtils
@@ -295,6 +297,7 @@ class Project(ToStringMixin):
         self._language_server_manager_init_error: Exception | None = None
         self.is_newly_created = is_newly_created
         self._agent: Optional["SerenaAgent"] = None
+        self._session_active_workspace: str | None = None
 
         # create .gitignore file in the project's Serena data folder if not yet present
         serena_data_gitignore_path = os.path.join(self._serena_data_folder, ".gitignore")
@@ -377,6 +380,40 @@ class Project(ToStringMixin):
         Saves the current project configuration to disk.
         """
         self.project_config.save(self.path_to_project_yml())
+
+    def get_active_workspace(self) -> str | None:
+        """
+        Returns the effective active workspace for the project.
+        """
+        return self._session_active_workspace or self.project_config.active_workspace
+
+    def set_active_workspace(self, active_workspace: str, persist_mode: Literal["project_local", "session"]) -> None:
+        """
+        Sets the active workspace for the project.
+
+        :param active_workspace: the relative path to the selected workspace entry
+        :param persist_mode: whether to keep the selection in-memory or persist it to project.local.yml
+        """
+        # validating the requested persistence mode
+        if persist_mode not in ("project_local", "session"):
+            raise ValueError("persist_mode must be either 'project_local' or 'session'.")
+
+        # applying a session-only override
+        if persist_mode == "session":
+            self._session_active_workspace = active_workspace
+            return
+
+        # persisting the workspace selection locally
+        self._session_active_workspace = None
+        self.project_config.active_workspace = active_workspace
+        if "active_workspace" not in self.project_config._local_override_keys:
+            self.project_config._local_override_keys.append("active_workspace")
+
+        project_local_yml_path = ProjectConfig._project_local_yml_path(self.path_to_project_yml())
+        if not os.path.exists(project_local_yml_path):
+            shutil.copy(PROJECT_LOCAL_TEMPLATE_FILE, project_local_yml_path)
+
+        self.save_config()
 
     def path_to_serena_data_folder(self) -> str:
         return self._serena_data_folder
@@ -628,26 +665,38 @@ class Project(ToStringMixin):
             source_file_path=relative_file_path,
         )
 
-    def _get_ls_specific_settings(self) -> dict:
+    def _get_ls_specific_settings(
+        self, csharp_workspace_selection: CSharpWorkspaceSelectionSettings | None = None
+    ) -> dict:
         """
         Build the merged language server specific settings for the project.
         """
         ls_specific_settings = {**self.serena_config.ls_specific_settings, **self.project_config.ls_specific_settings}
 
-        active_workspace = self.project_config.active_workspace
-        if active_workspace is None:
+        if Language.CSHARP not in self.project_config.languages:
             return ls_specific_settings
 
-        for language in (Language.CSHARP, Language.CSHARP_OMNISHARP):
-            if language not in self.project_config.languages:
-                continue
-            language_settings = dict(ls_specific_settings.get(language, {}))
-            language_settings["active_workspace"] = active_workspace
-            ls_specific_settings[language] = language_settings
+        effective_workspace_selection = csharp_workspace_selection or CSharpWorkspaceSelectionSettings(
+            active_workspace=self.get_active_workspace()
+        )
+        language_settings = dict(ls_specific_settings.get(Language.CSHARP, {}))
 
+        if effective_workspace_selection.active_workspace is None:
+            language_settings.pop("active_workspace", None)
+        else:
+            language_settings["active_workspace"] = effective_workspace_selection.active_workspace
+
+        if effective_workspace_selection.workspace_root is None:
+            language_settings.pop("workspace_root", None)
+        else:
+            language_settings["workspace_root"] = effective_workspace_selection.workspace_root
+
+        ls_specific_settings[Language.CSHARP] = language_settings
         return ls_specific_settings
 
-    def create_language_server_manager(self) -> LanguageServerManager:
+    def create_language_server_manager(
+        self, csharp_workspace_selection: CSharpWorkspaceSelectionSettings | None = None
+    ) -> LanguageServerManager:
         """
         Creates the language server manager for the project, starting one language server per configured programming language.
 
@@ -671,7 +720,7 @@ class Project(ToStringMixin):
 
             log.info(f"Creating language server manager for {self.project_root}")
             self._language_server_manager_init_error = None
-            ls_specific_settings = self._get_ls_specific_settings()
+            ls_specific_settings = self._get_ls_specific_settings(csharp_workspace_selection=csharp_workspace_selection)
             factory = LanguageServerFactory(
                 project_root=self.project_root,
                 project_data_path=self._serena_data_folder,

@@ -278,6 +278,9 @@ class TestProjectIndexingScope:
         assert indexing_scope.relative_paths == ("src/Main",)
         assert indexing_scope.display_path == "src/Main"
         assert indexing_scope.source == "explicit_scope"
+        assert indexing_scope.csharp_workspace_selection is not None
+        assert indexing_scope.csharp_workspace_selection.active_workspace is None
+        assert indexing_scope.csharp_workspace_selection.workspace_root == "src/Main"
 
     def test_resolve_indexing_scope_expands_active_workspace_solution_projects(self, monkeypatch, temp_project_dir):
         solution_file = Path(temp_project_dir) / "Main.sln"
@@ -289,6 +292,9 @@ class TestProjectIndexingScope:
         assert indexing_scope.relative_paths == ("src/App", "libs/Core")
         assert indexing_scope.display_path == "Main.sln"
         assert indexing_scope.source == "active_workspace"
+        assert indexing_scope.csharp_workspace_selection is not None
+        assert indexing_scope.csharp_workspace_selection.active_workspace == "Main.sln"
+        assert indexing_scope.csharp_workspace_selection.workspace_root is None
 
     def test_resolve_indexing_scope_falls_back_to_project_root_for_stale_workspace(self, temp_project_dir):
         indexing_scope = resolve_indexing_scope(temp_project_dir, active_workspace="src/Missing/Missing.sln")
@@ -296,6 +302,7 @@ class TestProjectIndexingScope:
         assert indexing_scope.relative_paths == ("",)
         assert indexing_scope.display_path == "."
         assert indexing_scope.source == "project_root"
+        assert indexing_scope.csharp_workspace_selection is None
 
     def test_resolve_indexing_scope_rejects_invalid_explicit_file(self, temp_project_dir):
         invalid_file = Path(temp_project_dir) / "notes.txt"
@@ -311,11 +318,12 @@ class TestProjectIndexingScope:
 
         gather_source_files = Mock(side_effect=[[], []])
         language_server_manager = SimpleNamespace(save_all_caches=Mock(), stop_all=Mock())
+        create_language_server_manager = Mock(return_value=language_server_manager)
         project = SimpleNamespace(
             project_root=temp_project_dir,
-            project_config=SimpleNamespace(active_workspace="Main.sln"),
             gather_source_files=gather_source_files,
-            create_language_server_manager=lambda: language_server_manager,
+            get_active_workspace=lambda: "Main.sln",
+            create_language_server_manager=create_language_server_manager,
         )
         registered_project = SimpleNamespace(get_project_instance=lambda serena_config: project)
 
@@ -324,6 +332,30 @@ class TestProjectIndexingScope:
         ProjectCommands._index_project(registered_project, "ERROR", timeout=5)
 
         assert gather_source_files.call_args_list == [(("src/App",),), (("libs/Core",),)]
+        assert create_language_server_manager.call_args.kwargs["csharp_workspace_selection"].active_workspace == "Main.sln"
+
+    def test_index_project_uses_explicit_solution_for_csharp_server(self, monkeypatch, temp_project_dir):
+        solution_file = Path(temp_project_dir) / "Scoped.sln"
+        solution_file.touch()
+        self._stub_solution_listing(monkeypatch, "Project(s)\n----------\nsrc/App/App.csproj\n")
+
+        language_server_manager = SimpleNamespace(save_all_caches=Mock(), stop_all=Mock())
+        create_language_server_manager = Mock(return_value=language_server_manager)
+        project = SimpleNamespace(
+            project_root=temp_project_dir,
+            gather_source_files=Mock(return_value=[]),
+            get_active_workspace=lambda: "Main.sln",
+            create_language_server_manager=create_language_server_manager,
+        )
+        registered_project = SimpleNamespace(get_project_instance=lambda serena_config: project)
+
+        monkeypatch.setattr("serena.cli.SerenaConfig.from_config_file", lambda: object())
+
+        ProjectCommands._index_project(registered_project, "ERROR", timeout=5, scope="Scoped.sln")
+
+        workspace_selection = create_language_server_manager.call_args.kwargs["csharp_workspace_selection"]
+        assert workspace_selection.active_workspace == "Scoped.sln"
+        assert workspace_selection.workspace_root is None
 
 
 class TestProjectCreateHelper:
