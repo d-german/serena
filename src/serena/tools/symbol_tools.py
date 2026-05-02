@@ -20,6 +20,7 @@ from serena.tools.tools_base import ToolMarkerOptional
 from serena.util.ls_diagnostics import GroupedDiagnostics
 from serena.util.text_utils import find_text_coordinates
 from solidlsp.ls_types import SymbolKind
+from solidlsp.util.symbol_index import SymbolIndexEntry
 
 
 def _check_solution_mismatch(project: "Project", relative_path: str) -> str | None:
@@ -41,7 +42,19 @@ def _check_solution_mismatch(project: "Project", relative_path: str) -> str | No
     if active_workspace in file_solutions:
         return None  # file is in the active solution — all good
 
-    suggested = file_solutions[0]
+    # pick the most relevant solution by longest common path prefix with the file
+    from pathlib import PurePosixPath
+    def _common_prefix_len(sol: str) -> int:
+        sol_parts = PurePosixPath(sol).parent.parts
+        file_parts = PurePosixPath(relative_path).parent.parts
+        common = 0
+        for a, b in zip(sol_parts, file_parts):
+            if a.lower() == b.lower():
+                common += 1
+            else:
+                break
+        return common
+    suggested = max(file_solutions, key=_common_prefix_len)
     return (
         f"Warning: The file '{relative_path}' belongs to solution '{suggested}', "
         f"but the active workspace is '{active_workspace}'. "
@@ -389,8 +402,6 @@ class FindReferencingSymbolsTool(Tool, ToolMarkerSymbolicRead):
         :return: a list of JSON objects with the symbols referencing the requested symbol
         """
         mismatch_warning = _check_solution_mismatch(self.project, relative_path)
-        if mismatch_warning:
-            return mismatch_warning
         include_body = False  # It is probably never a good idea to include the body of the referencing symbols
         parsed_include_kinds: Sequence[SymbolKind] | None = [SymbolKind(k) for k in include_kinds] if include_kinds else None
         parsed_exclude_kinds: Sequence[SymbolKind] | None = [SymbolKind(k) for k in exclude_kinds] if exclude_kinds else None
@@ -460,6 +471,8 @@ class FindReferencingSymbolsTool(Tool, ToolMarkerSymbolicRead):
         result_json = self._to_json(result)
         if not references_in_symbols and self._is_ls_loading():
             result_json += "\n" + _LSP_READINESS_WARNING.format(wait=_LSP_READINESS_WAIT_SECONDS)
+        if mismatch_warning:
+            result_json = mismatch_warning + "\n\n" + result_json
         return self._limit_length(result_json, max_answer_chars, shortened_result_factories=shortened_results)
 
 
@@ -492,8 +505,6 @@ class FindImplementationsTool(Tool, ToolMarkerSymbolicRead):
         :return: a list of JSON objects with the symbols implementing the requested symbol
         """
         mismatch_warning = _check_solution_mismatch(self.project, relative_path)
-        if mismatch_warning:
-            return mismatch_warning
         include_body = False
         parsed_include_kinds: Sequence[SymbolKind] | None = [SymbolKind(k) for k in include_kinds] if include_kinds else None
         parsed_exclude_kinds: Sequence[SymbolKind] | None = [SymbolKind(k) for k in exclude_kinds] if exclude_kinds else None
@@ -531,6 +542,8 @@ class FindImplementationsTool(Tool, ToolMarkerSymbolicRead):
         result = self._to_json(symbol_dicts)
         if not implementing_symbols and self._is_ls_loading():
             result += "\n" + _LSP_READINESS_WARNING.format(wait=_LSP_READINESS_WAIT_SECONDS)
+        if mismatch_warning:
+            result = mismatch_warning + "\n\n" + result
         return self._limit_length(result, max_answer_chars)
 
 
@@ -561,8 +574,6 @@ class FindDeclarationTool(Tool, ToolMarkerSymbolicRead):
         :param include_info: whether to include additional info (hover-like). Default False.
         """
         mismatch_warning = _check_solution_mismatch(self.project, relative_path)
-        if mismatch_warning:
-            return mismatch_warning
         symbol_retriever = self.create_language_server_symbol_retriever()
         relative_path = self._sanitize_input_param(relative_path)
         regex = self._sanitize_input_param(regex)
@@ -610,6 +621,8 @@ class FindDeclarationTool(Tool, ToolMarkerSymbolicRead):
             include_info,
         )
         result = self._to_json(symbol_dict)
+        if mismatch_warning:
+            result = mismatch_warning + "\n\n" + result
         return result
 
     @staticmethod
@@ -953,6 +966,16 @@ class SearchSymbolIndexTool(Tool, ToolMarkerSymbolicRead):
                 if self._is_ls_loading():
                     msg += "\n" + _LSP_READINESS_WARNING.format(wait=_LSP_READINESS_WAIT_SECONDS)
                 return msg
+
+        # deduplicate entries (same symbol can appear via multiple LS or mixed-separator paths)
+        seen: set[tuple[str, str, str, int, int]] = set()
+        unique_entries: list[SymbolIndexEntry] = []
+        for e in all_entries:
+            key = (e.name, e.name_path, e.relative_path, e.kind, e.line)
+            if key not in seen:
+                seen.add(key)
+                unique_entries.append(e)
+        all_entries = unique_entries
 
         # cap results
         truncated = len(all_entries) > max_results

@@ -216,15 +216,14 @@ class SetActiveWorkspaceTool(Tool):
         )
 
         # Report LS readiness status (single check, no polling)
-        if restart:
-            ls_manager = getattr(self.agent, 'get_language_server_manager', lambda: None)()
-            if ls_manager is not None:
-                if ls_manager.is_any_server_loading():
-                    result += (
-                        "\n⚠️ Language server is still indexing (exceeded 30s init timeout). "
-                        "LSP-dependent tools will internally wait for readiness — you can proceed immediately."
-                    )
-                else:
-                    result += "\nLanguage server ready."
+        ls_manager = getattr(self.agent, 'get_language_server_manager', lambda: None)()
+        if ls_manager is not None:
+            if ls_manager.is_any_server_loading():
+                result += (
+                    "\n⚠️ Language server is still indexing (exceeded 30s init timeout). "
+                    "LSP-dependent tools will internally wait for readiness — you can proceed immediately."
+                )
+            else:
+                result += "\nLanguage server ready."
 
         return result

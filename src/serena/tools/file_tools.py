@@ -7,6 +7,7 @@ File and file system-related tools, specifically for
 """
 
 import os
+import re
 from collections import defaultdict
 from fnmatch import fnmatch
 from pathlib import Path
@@ -394,6 +395,12 @@ class SearchForPatternTool(Tool):
         abs_path = os.path.join(self.get_project_root(), relative_path)
         if not os.path.exists(abs_path):
             raise FileNotFoundError(f"Relative path {relative_path} does not exist.")
+
+        # Validate regex early to give a clear error instead of silently failing per-file
+        try:
+            re.compile(substring_pattern, re.DOTALL | re.MULTILINE)
+        except re.error as e:
+            return f"Invalid regex pattern: {e}"
 
         if restrict_search_to_code_files:
             matches = self.project.search_source_files_for_pattern(

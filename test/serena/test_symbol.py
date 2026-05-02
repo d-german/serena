@@ -248,8 +248,11 @@ class TestSymbolNameMatching:
             pytest.param("**/**/foo", ["foo"], False, True, id="'**/**/foo' strips multiple ** prefixes"),
             pytest.param("**/*/foo", ["bar", "foo"], False, True, id="'**/*/foo' strips mixed ** and * prefixes"),
             # wildcard-only patterns should NOT strip the last segment
-            pytest.param("**", ["anything"], False, False, id="'**' alone is not stripped (would be empty)"),
-            pytest.param("*", ["anything"], False, False, id="'*' alone is not stripped (would be empty)"),
+            pytest.param("**", ["anything"], False, True, id="'**' alone matches anything (wildcard)"),
+            pytest.param("*", ["anything"], False, True, id="'*' alone matches anything (wildcard)"),
+            # middle wildcard support
+            pytest.param("Namespace/*/Method", ["Namespace", "Class", "Method"], False, True, id="middle * matches any single component"),
+            pytest.param("A/**/C", ["A", "B", "C"], False, True, id="middle ** matches any single component"),
             # leading ** should disable absolute semantics
             pytest.param("**/foo", ["ns", "foo"], False, True, id="'**/foo' is never absolute"),
         ],

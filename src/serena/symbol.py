@@ -168,6 +168,8 @@ class NamePathMatcher(ToStringMixin):
             return cls(name=component_str, overload_idx=overload_idx)
 
         def matches(self, name_path_component: NamePathComponent, substring_matching: bool) -> bool:
+            if self.name in ("*", "**"):
+                return True
             if substring_matching:
                 if self.name not in name_path_component.name:
                     return False
