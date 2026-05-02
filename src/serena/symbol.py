@@ -187,9 +187,16 @@ class NamePathMatcher(ToStringMixin):
         self._expr = name_path_pattern
         self._substring_matching = substring_matching
         self._is_absolute_pattern = name_path_pattern.startswith(NAME_PATH_SEP)
-        self._components = [
-            self.PatternComponent.from_string(x) for x in name_path_pattern.lstrip(NAME_PATH_SEP).rstrip(NAME_PATH_SEP).split(NAME_PATH_SEP)
-        ]
+        raw_segments = name_path_pattern.lstrip(NAME_PATH_SEP).rstrip(NAME_PATH_SEP).split(NAME_PATH_SEP)
+
+        # strip leading wildcard segments ("**" or "*") — the suffix matching
+        # already handles "match at any depth", so these are redundant
+        while len(raw_segments) > 1 and raw_segments[0] in ("*", "**"):
+            raw_segments.pop(0)
+            # a pattern with leading wildcards is never absolute
+            self._is_absolute_pattern = False
+
+        self._components = [self.PatternComponent.from_string(x) for x in raw_segments]
 
     def _tostring_includes(self) -> list[str]:
         return ["_expr"]

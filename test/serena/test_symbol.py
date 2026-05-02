@@ -232,6 +232,35 @@ class TestSymbolNameMatching:
         error_msg = self._create_assertion_error_message(name_path_pattern, symbol_name_path_components, False, expected, result)
         assert result == expected, error_msg
 
+    @pytest.mark.parametrize(
+        "name_path_pattern, symbol_name_path_parts, is_substring_match, expected",
+        [
+            # leading ** should be stripped — equivalent to simple name
+            pytest.param("**/foo", ["foo"], False, True, id="'**/foo' matches 'foo' (** stripped)"),
+            pytest.param("**/foo", ["bar", "foo"], False, True, id="'**/foo' matches ['bar', 'foo'] (** stripped)"),
+            pytest.param("**/foo", ["a", "b", "foo"], False, True, id="'**/foo' matches deep nesting (** stripped)"),
+            pytest.param("**/foo", ["bar"], False, False, id="'**/foo' does not match 'bar' (** stripped)"),
+            # leading * should be stripped — equivalent to simple name / suffix match
+            pytest.param("*/foo", ["bar", "foo"], False, True, id="'*/foo' matches ['bar', 'foo'] (* stripped → suffix)"),
+            pytest.param("*/Class/method", ["ns", "Class", "method"], False, True, id="'*/Class/method' matches suffix (* stripped)"),
+            pytest.param("*/Class/method", ["Class", "method"], False, True, id="'*/Class/method' matches exact suffix (* stripped)"),
+            # multiple leading wildcards stripped
+            pytest.param("**/**/foo", ["foo"], False, True, id="'**/**/foo' strips multiple ** prefixes"),
+            pytest.param("**/*/foo", ["bar", "foo"], False, True, id="'**/*/foo' strips mixed ** and * prefixes"),
+            # wildcard-only patterns should NOT strip the last segment
+            pytest.param("**", ["anything"], False, False, id="'**' alone is not stripped (would be empty)"),
+            pytest.param("*", ["anything"], False, False, id="'*' alone is not stripped (would be empty)"),
+            # leading ** should disable absolute semantics
+            pytest.param("**/foo", ["ns", "foo"], False, True, id="'**/foo' is never absolute"),
+        ],
+    )
+    def test_match_wildcard_prefix(self, name_path_pattern, symbol_name_path_parts, is_substring_match, expected):
+        """Tests that leading wildcard segments (* and **) are stripped from patterns."""
+        symbol_name_path_components = [NamePathComponent(part) for part in symbol_name_path_parts]
+        result = NamePathMatcher(name_path_pattern, is_substring_match).matches_reversed_components(reversed(symbol_name_path_components))
+        error_msg = self._create_assertion_error_message(name_path_pattern, symbol_name_path_parts, is_substring_match, expected, result)
+        assert result == expected, error_msg
+
 
 @pytest.mark.python
 class TestLanguageServerSymbolRetriever:

@@ -781,6 +781,10 @@ class CSharpLanguageServer(SolidLanguageServer):
             log.info("Indexing complete")
         else:
             log.warning("Timeout waiting for indexing to complete, proceeding anyway")
+            # mark as functionally ready so that downstream readiness checks
+            # (e.g. _is_ls_loading) do not permanently report "still loading"
+            # when the notification never fires
+            self._indexing_complete.set()
 
     def is_indexing_complete(self) -> bool:
         """Whether Roslyn has finished loading/indexing the solution."""

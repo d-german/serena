@@ -255,3 +255,43 @@ class TestFrozenEntry:
         # should be usable as dict key / set member
         s = {entry}
         assert entry in s
+
+
+class TestPathNormalization:
+    """Tests that SymbolIndex normalizes path separators consistently."""
+
+    def test_backslash_normalized_to_forward_slash(self) -> None:
+        index = SymbolIndex()
+        entry = SymbolIndexEntry(name="Foo", name_path="Foo", relative_path="src\\models\\Foo.cs", kind=SymbolKind.Class, line=0, parent_name_path=None)
+        index.add(entry)
+        assert index.total_files == 1
+        # stored entry should have normalised path
+        results = index.lookup("Foo")
+        assert results[0].relative_path == "src/models/Foo.cs"
+
+    def test_mixed_separators_same_file_no_duplicates(self) -> None:
+        index = SymbolIndex()
+        e1 = SymbolIndexEntry(name="Foo", name_path="Foo", relative_path="src/models/Foo.cs", kind=SymbolKind.Class, line=0, parent_name_path=None)
+        e2 = SymbolIndexEntry(name="Bar", name_path="Bar", relative_path="src\\models\\Foo.cs", kind=SymbolKind.Class, line=5, parent_name_path=None)
+        index.add(e1)
+        index.add(e2)
+        # both entries stored under the same file
+        assert index.total_files == 1
+        assert index.symbols_in_file("src/models/Foo.cs") == {"Foo", "Bar"}
+        assert index.symbols_in_file("src\\models\\Foo.cs") == {"Foo", "Bar"}
+
+    def test_remove_file_with_backslash(self) -> None:
+        index = SymbolIndex()
+        entry = SymbolIndexEntry(name="Foo", name_path="Foo", relative_path="src/models/Foo.cs", kind=SymbolKind.Class, line=0, parent_name_path=None)
+        index.add(entry)
+        # remove using backslash path
+        removed = index.remove_file("src\\models\\Foo.cs")
+        assert removed == 1
+        assert index.total_files == 0
+
+    def test_symbols_in_file_either_separator(self) -> None:
+        index = SymbolIndex()
+        entry = SymbolIndexEntry(name="Foo", name_path="Foo", relative_path="a\\b\\c.cs", kind=SymbolKind.Class, line=0, parent_name_path=None)
+        index.add(entry)
+        assert index.symbols_in_file("a/b/c.cs") == {"Foo"}
+        assert index.symbols_in_file("a\\b\\c.cs") == {"Foo"}

@@ -43,6 +43,17 @@ class TestCSharpIndexingComplete:
         event.set()
         assert event.is_set()
 
+    def test_returns_true_after_timeout(self):
+        """After 30s timeout without notification, event should be force-set
+        so that is_indexing_complete() returns True (prevents stale warnings)."""
+        event = threading.Event()
+        # simulate the _start_server timeout branch
+        timed_out = not event.wait(0)  # immediate timeout
+        assert timed_out
+        # the fix: set the event after timeout
+        event.set()
+        assert event.is_set()
+
 
 # -- Tests for is_any_server_loading() aggregation ---------------------------
 

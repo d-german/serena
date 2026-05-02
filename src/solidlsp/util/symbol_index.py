@@ -68,8 +68,20 @@ class SymbolIndex:
 
     def add(self, entry: SymbolIndexEntry) -> None:
         """Add a single entry to the index."""
+        # normalise path separators so the same file is never stored under both
+        # forward-slash and backslash variants (Windows)
+        normalised_path = entry.relative_path.replace("\\", "/")
+        if normalised_path != entry.relative_path:
+            entry = SymbolIndexEntry(
+                name=entry.name,
+                name_path=entry.name_path,
+                relative_path=normalised_path,
+                kind=entry.kind,
+                line=entry.line,
+                parent_name_path=entry.parent_name_path,
+            )
         self._by_name[entry.name].append(entry)
-        self._by_file[entry.relative_path].add(entry.name)
+        self._by_file[normalised_path].add(entry.name)
 
     def remove_file(self, relative_path: str) -> int:
         """Remove all entries for the given file from the index.
@@ -77,6 +89,7 @@ class SymbolIndex:
         :param relative_path: the file whose symbols should be purged.
         :return: the number of entries removed.
         """
+        relative_path = relative_path.replace("\\", "/")
         names = self._by_file.pop(relative_path, None)
         if not names:
             return 0
@@ -155,7 +168,7 @@ class SymbolIndex:
 
     def symbols_in_file(self, relative_path: str) -> set[str]:
         """Return the set of symbol names defined in the given file."""
-        return set(self._by_file.get(relative_path, set()))
+        return set(self._by_file.get(relative_path.replace("\\", "/"), set()))
 
     def iter_all_entries(self) -> Iterator[SymbolIndexEntry]:
         """Iterate over every entry in the index."""
