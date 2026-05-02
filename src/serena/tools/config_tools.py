@@ -210,7 +210,21 @@ class SetActiveWorkspaceTool(Tool):
             self.agent.reset_language_server_manager()
 
         suffix = absolute_path.suffix.lower()
-        return (
+        result = (
             f"Active workspace set to '{relative_path}' ({suffix}) "
             f"with persist_mode='{persist_mode}' and restart={str(restart).lower()}."
         )
+
+        # Report LS readiness status (single check, no polling)
+        if restart:
+            ls_manager = getattr(self.agent, 'get_language_server_manager', lambda: None)()
+            if ls_manager is not None:
+                if ls_manager.is_any_server_loading():
+                    result += (
+                        "\n⚠️ Language server is still indexing (exceeded 30s init timeout). "
+                        "LSP-dependent tools will internally wait for readiness — you can proceed immediately."
+                    )
+                else:
+                    result += "\nLanguage server ready."
+
+        return result

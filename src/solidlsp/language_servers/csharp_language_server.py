@@ -608,7 +608,7 @@ class CSharpLanguageServer(SolidLanguageServer):
         )
 
     def _start_server(self) -> None:
-        indexing_complete = threading.Event()
+        self._indexing_complete = threading.Event()
 
         def do_nothing(params: dict) -> None:
             return
@@ -717,7 +717,7 @@ class CSharpLanguageServer(SolidLanguageServer):
             return
 
         def handle_workspace_indexing_complete(params: dict) -> None:
-            indexing_complete.set()
+            self._indexing_complete.set()
 
         # Set up notification handlers
         self.server.on_notification("window/logMessage", window_log_message)
@@ -777,10 +777,14 @@ class CSharpLanguageServer(SolidLanguageServer):
             "This may take a while for large projects"
         )
 
-        if indexing_complete.wait(30):  # Wait up to 30 seconds for indexing
+        if self._indexing_complete.wait(30):  # Wait up to 30 seconds for indexing
             log.info("Indexing complete")
         else:
             log.warning("Timeout waiting for indexing to complete, proceeding anyway")
+
+    def is_indexing_complete(self) -> bool:
+        """Whether Roslyn has finished loading/indexing the solution."""
+        return self._indexing_complete.is_set()
 
     def _force_pull_diagnostics(self, init_response: dict | InitializeResult) -> None:
         """

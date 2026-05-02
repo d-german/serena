@@ -50,6 +50,35 @@ def _check_solution_mismatch(project: "Project", relative_path: str) -> str | No
     )
 
 
+_LSP_READINESS_WAIT_SECONDS = 15
+_LSP_READINESS_POLL_INTERVAL = 2
+_LSP_READINESS_WARNING = (
+    "⚠️ The language server is still loading this workspace after {wait}s. "
+    "Results may be incomplete. Use read_file or get_symbols_overview as alternatives, or retry shortly."
+)
+
+
+def _wait_for_lsp_readiness(agent: "SerenaAgent") -> bool:
+    """Poll until the LS finishes indexing or timeout expires.
+
+    :return: True if the LS became ready, False if timeout expired.
+    """
+    import time
+
+    ls_manager = agent.get_language_server_manager()
+    if ls_manager is None:
+        return True
+
+    elapsed = 0.0
+    while elapsed < _LSP_READINESS_WAIT_SECONDS:
+        if not ls_manager.is_any_server_loading():
+            return True
+        time.sleep(_LSP_READINESS_POLL_INTERVAL)
+        elapsed += _LSP_READINESS_POLL_INTERVAL
+
+    return not ls_manager.is_any_server_loading()
+
+
 class RestartLanguageServerTool(Tool, ToolMarkerOptional):
     """Restarts the language server(s)."""
 
@@ -229,6 +258,18 @@ class FindSymbolTool(Tool, ToolMarkerSymbolicRead):
             substring_matching=substring_matching,
             within_relative_path=relative_path,
         )
+
+        # If empty and LS is still loading, wait then retry
+        if not symbols and self._is_ls_loading():
+            if _wait_for_lsp_readiness(self.agent):
+                symbols = symbol_retriever.find(
+                    name_path_pattern,
+                    include_kinds=parsed_include_kinds,
+                    exclude_kinds=parsed_exclude_kinds,
+                    substring_matching=substring_matching,
+                    within_relative_path=relative_path,
+                )
+
         n_matches = len(symbols)
 
         def create_short_result_relative_path_to_name_paths() -> str:
@@ -270,6 +311,10 @@ class FindSymbolTool(Tool, ToolMarkerSymbolicRead):
         workspace_hint = self._get_workspace_switch_hint(symbols)
         if workspace_hint:
             result += "\n" + workspace_hint
+
+        # append readiness warning if results are empty and LS is still loading
+        if not symbols and self._is_ls_loading():
+            result += "\n" + _LSP_READINESS_WARNING.format(wait=_LSP_READINESS_WAIT_SECONDS)
 
         return self._limit_length(result, max_answer_chars, shortened_result_factories=[create_short_result_relative_path_to_name_paths])
 
@@ -359,6 +404,17 @@ class FindReferencingSymbolsTool(Tool, ToolMarkerSymbolicRead):
             exclude_kinds=parsed_exclude_kinds,
         )
 
+        # If empty and LS is still loading, wait then retry
+        if not references_in_symbols and self._is_ls_loading():
+            if _wait_for_lsp_readiness(self.agent):
+                references_in_symbols = symbol_retriever.find_referencing_symbols(
+                    name_path,
+                    relative_file_path=relative_path,
+                    include_body=include_body,
+                    include_kinds=parsed_include_kinds,
+                    exclude_kinds=parsed_exclude_kinds,
+                )
+
         reference_dicts = []
         for ref in references_in_symbols:
             ref_dict_orig = ref.symbol.to_dict(kind=True, relative_path=True, depth=0, body=include_body, body_location=True)
@@ -402,6 +458,8 @@ class FindReferencingSymbolsTool(Tool, ToolMarkerSymbolicRead):
         shortened_results = [make_refs_without_context, make_per_file_counts, make_summary]
 
         result_json = self._to_json(result)
+        if not references_in_symbols and self._is_ls_loading():
+            result_json += "\n" + _LSP_READINESS_WARNING.format(wait=_LSP_READINESS_WAIT_SECONDS)
         return self._limit_length(result_json, max_answer_chars, shortened_result_factories=shortened_results)
 
 
@@ -449,6 +507,17 @@ class FindImplementationsTool(Tool, ToolMarkerSymbolicRead):
             exclude_kinds=parsed_exclude_kinds,
         )
 
+        # If empty and LS is still loading, wait then retry
+        if not implementing_symbols and self._is_ls_loading():
+            if _wait_for_lsp_readiness(self.agent):
+                implementing_symbols = symbol_retriever.find_implementing_symbols(
+                    name_path,
+                    relative_file_path=relative_path,
+                    include_body=include_body,
+                    include_kinds=parsed_include_kinds,
+                    exclude_kinds=parsed_exclude_kinds,
+                )
+
         symbol_dicts = [
             dict(s.to_dict(kind=True, relative_path=True, depth=0, body=include_body, body_location=True)) for s in implementing_symbols
         ]
@@ -460,6 +529,8 @@ class FindImplementationsTool(Tool, ToolMarkerSymbolicRead):
                     s_dict.pop("name", None)  # name is included in the info
 
         result = self._to_json(symbol_dicts)
+        if not implementing_symbols and self._is_ls_loading():
+            result += "\n" + _LSP_READINESS_WARNING.format(wait=_LSP_READINESS_WAIT_SECONDS)
         return self._limit_length(result, max_answer_chars)
 
 
@@ -517,10 +588,19 @@ class FindDeclarationTool(Tool, ToolMarkerSymbolicRead):
             column=coords.col,
             include_body=include_body,
         )
+        if defining_symbol is None and self._is_ls_loading():
+            if _wait_for_lsp_readiness(self.agent):
+                defining_symbol = symbol_retriever.find_declaration(
+                    relative_file_path=relative_path,
+                    line=coords.line,
+                    column=coords.col,
+                    include_body=include_body,
+                )
         if defining_symbol is None:
-            raise ValueError(
-                f"No symbol declaration found at the location of the regex match. Location: {relative_path}:{coords.line}:{coords.col}."
-            )
+            msg = f"No symbol declaration found at the location of the regex match. Location: {relative_path}:{coords.line}:{coords.col}."
+            if self._is_ls_loading():
+                msg += "\n" + _LSP_READINESS_WARNING.format(wait=_LSP_READINESS_WAIT_SECONDS)
+            raise ValueError(msg)
 
         # create output
         symbol_dict = self._defining_symbol_to_result_dict(
@@ -854,7 +934,25 @@ class SearchSymbolIndexTool(Tool, ToolMarkerSymbolicRead):
             return "No symbol index loaded. Run `project index` first to build the index."
 
         if not all_entries:
-            return f"No symbols found matching '{query}'."
+            if self._is_ls_loading():
+                if _wait_for_lsp_readiness(self.agent):
+                    # retry after LS becomes ready
+                    all_entries = []
+                    for lang_server in ls_manager.iter_language_servers():
+                        index = lang_server.symbol_index
+                        if index is None:
+                            continue
+                        entries = index.lookup(
+                            query,
+                            substring_matching=substring_matching,
+                            kind_filter=kind_filter if kind_filter else None,
+                        )
+                        all_entries.extend(entries)
+            if not all_entries:
+                msg = f"No symbols found matching '{query}'."
+                if self._is_ls_loading():
+                    msg += "\n" + _LSP_READINESS_WARNING.format(wait=_LSP_READINESS_WAIT_SECONDS)
+                return msg
 
         # cap results
         truncated = len(all_entries) > max_results

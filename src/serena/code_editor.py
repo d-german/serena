@@ -255,6 +255,15 @@ class LanguageServerCodeEditor(CodeEditor[LanguageServerSymbol]):
     def _get_language_server(self, relative_path: str) -> SolidLanguageServer:
         return self._symbol_retriever.get_language_server(relative_path)
 
+    def _save_edited_file(self, edited_file: "CodeEditor.EditedFile") -> None:
+        super()._save_edited_file(edited_file)
+        # Notify the symbol index that this file's symbols are stale
+        try:
+            ls = self._get_language_server(edited_file.relative_path)
+            ls.mark_index_dirty(edited_file.relative_path)
+        except Exception:
+            pass  # file type may not have an LS
+
     class EditedFile(CodeEditor.EditedFile):
         def __init__(self, lang_server: SolidLanguageServer, relative_path: str, file_buffer: LSPFileBuffer):
             super().__init__(relative_path)

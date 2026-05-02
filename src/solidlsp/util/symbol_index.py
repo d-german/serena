@@ -71,6 +71,29 @@ class SymbolIndex:
         self._by_name[entry.name].append(entry)
         self._by_file[entry.relative_path].add(entry.name)
 
+    def remove_file(self, relative_path: str) -> int:
+        """Remove all entries for the given file from the index.
+
+        :param relative_path: the file whose symbols should be purged.
+        :return: the number of entries removed.
+        """
+        names = self._by_file.pop(relative_path, None)
+        if not names:
+            return 0
+
+        removed = 0
+        for name in names:
+            entries = self._by_name.get(name)
+            if entries is None:
+                continue
+            before = len(entries)
+            self._by_name[name] = [e for e in entries if e.relative_path != relative_path]
+            removed += before - len(self._by_name[name])
+            if not self._by_name[name]:
+                del self._by_name[name]
+
+        return removed
+
     @property
     def total_entries(self) -> int:
         """Total number of index entries across all symbols."""

@@ -107,6 +107,57 @@ class TestFileMaps:
         assert populated_index.symbols_in_file("nonexistent.cs") == set()
 
 
+class TestRemoveFile:
+    """Tests for SymbolIndex.remove_file()."""
+
+    def test_remove_existing_file(self, populated_index: SymbolIndex, sample_entries: list[SymbolIndexEntry]):
+        # src/foo.cs has 3 entries: MyClass, DoWork, GetValue
+        removed = populated_index.remove_file("src/foo.cs")
+        assert removed == 3
+        assert populated_index.total_files == 2
+        assert populated_index.symbols_in_file("src/foo.cs") == set()
+        # DoWork still exists via bar.cs
+        assert len(populated_index.lookup("DoWork")) == 1
+        assert populated_index.lookup("DoWork")[0].relative_path == "src/bar.cs"
+        # MyClass and GetValue are gone entirely
+        assert populated_index.lookup("MyClass") == []
+        assert populated_index.lookup("GetValue") == []
+
+    def test_remove_nonexistent_file(self, populated_index: SymbolIndex):
+        removed = populated_index.remove_file("src/nonexistent.cs")
+        assert removed == 0
+        assert populated_index.total_files == 3  # unchanged
+
+    def test_remove_then_readd(self, populated_index: SymbolIndex):
+        populated_index.remove_file("src/foo.cs")
+        # Re-add a single entry for foo.cs
+        entry = SymbolIndexEntry(
+            name="NewClass", name_path="NewClass", relative_path="src/foo.cs",
+            kind=SymbolKind.Class, line=1, parent_name_path=None,
+        )
+        populated_index.add(entry)
+        assert populated_index.total_files == 3
+        assert populated_index.symbols_in_file("src/foo.cs") == {"NewClass"}
+        assert populated_index.lookup("NewClass")[0].relative_path == "src/foo.cs"
+
+    def test_remove_file_shared_name_cleanup(self, populated_index: SymbolIndex):
+        # DoWork is shared between foo.cs and bar.cs. Removing bar.cs should keep DoWork from foo.cs.
+        populated_index.remove_file("src/bar.cs")
+        remaining = populated_index.lookup("DoWork")
+        assert len(remaining) == 1
+        assert remaining[0].relative_path == "src/foo.cs"
+        # OtherClass was only in bar.cs, should be gone
+        assert populated_index.lookup("OtherClass") == []
+
+    def test_remove_all_files(self, populated_index: SymbolIndex):
+        populated_index.remove_file("src/foo.cs")
+        populated_index.remove_file("src/bar.cs")
+        populated_index.remove_file("src/helper.cs")
+        assert populated_index.total_entries == 0
+        assert populated_index.total_files == 0
+        assert populated_index.total_symbols == 0
+
+
 class TestIterAll:
     """Tests for iter_all_entries."""
 

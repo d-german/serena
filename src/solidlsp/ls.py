@@ -539,6 +539,11 @@ class SolidLanguageServer(ABC):
         # * precomputed symbol index (built from document symbols cache)
         self._symbol_index: SymbolIndex | None = None
         self._load_symbol_index()
+        # * dirty tracking for incremental index updates
+        self._index_dirty_files: set[str] = set()
+        """Relative paths of files whose symbols have changed since last index save."""
+        self._symbol_index_needs_save: bool = False
+        self._patching_index: bool = False
 
         self.server_started = False
         if config.trace_lsp_communication:
@@ -1888,6 +1893,9 @@ class SolidLanguageServer(ABC):
             log.debug("Updating cached document symbols for %s", relative_file_path)
             self._document_symbols_cache[cache_key] = (file_data.content_hash, document_symbols)
             self._document_symbols_cache_is_modified = True
+            # secondary dirty signal: file content changed (catches external edits)
+            self._index_dirty_files.add(relative_file_path)
+            self._symbol_index_needs_save = True
 
             return document_symbols
 
@@ -2935,17 +2943,36 @@ class SolidLanguageServer(ABC):
                 SolidLanguageServer._flatten_symbols_into_index(index, relative_path, children, parent_name_path=name_path)
 
     def _save_symbol_index(self) -> None:
-        """Build and persist the symbol index derived from the document symbols cache."""
-        if not self._document_symbols_cache:
-            log.debug("No document symbols cache to build symbol index from")
-            return
+        """Persist the current symbol index to disk."""
+        if self._symbol_index is None:
+            if not self._document_symbols_cache:
+                log.debug("No document symbols cache to build symbol index from")
+                return
+            self._symbol_index = self._build_symbol_index()
 
         cache_file = self.cache_dir / self.SYMBOL_INDEX_CACHE_FILENAME
         try:
-            self._symbol_index = self._build_symbol_index()
             self._symbol_index.save(str(cache_file), extra_version=self._document_symbols_cache_version())
+            self._symbol_index_needs_save = False
         except Exception as e:
             log.error("Failed to save symbol index to %s: %s", cache_file, e)
+
+    def mark_index_dirty(self, relative_path: str) -> None:
+        """Mark a file as having been modified, requiring symbol index update on next save.
+
+        :param relative_path: the relative path of the modified file.
+        """
+        self._index_dirty_files.add(relative_path)
+        self._symbol_index_needs_save = True
+        log.debug("Marked %s as dirty for symbol index update", relative_path)
+
+    def is_indexing_complete(self) -> bool:
+        """Whether the language server has finished indexing/loading the project.
+
+        Subclasses that receive indexing-complete notifications should override this.
+        The default assumes the server is always ready (most LS don't signal indexing state).
+        """
+        return True
 
     def _load_symbol_index(self) -> None:
         """Load the prebuilt symbol index from disk if available.
@@ -2989,16 +3016,63 @@ class SolidLanguageServer(ABC):
     def save_cache(self) -> None:
         self._save_raw_document_symbols_cache()
         self._save_document_symbols_cache()
-        self._save_symbol_index()
+        if self._symbol_index_needs_save:
+            self._save_symbol_index()
 
     @property
     def symbol_index(self) -> SymbolIndex | None:
-        """The precomputed symbol index, if available.
+        """The precomputed symbol index, patched lazily when dirty files exist.
 
-        Built from the document symbols cache during ``save_cache()`` or loaded
-        from a persisted index file during startup.
+        Built from the document symbols cache during startup or first access.
+        Incrementally patched when files have been edited since the last query.
         """
+        if self._symbol_index is None:
+            return None
+
+        if self._index_dirty_files and not self._patching_index:
+            self._patch_symbol_index()
+
         return self._symbol_index
+
+    _INDEX_PATCH_THRESHOLD = 20
+
+    def _patch_symbol_index(self) -> None:
+        """Incrementally patch the symbol index for dirty files.
+
+        If too many files are dirty, falls back to a full rebuild.
+        """
+        assert self._symbol_index is not None
+        self._patching_index = True
+        try:
+            dirty = self._index_dirty_files.copy()
+
+            if len(dirty) > self._INDEX_PATCH_THRESHOLD:
+                log.info("Dirty file count %d exceeds threshold %d, performing full index rebuild",
+                         len(dirty), self._INDEX_PATCH_THRESHOLD)
+                self._symbol_index = self._build_symbol_index()
+                self._index_dirty_files.clear()
+                self._symbol_index_needs_save = True
+                return
+
+            patched: set[str] = set()
+            for relative_path in dirty:
+                try:
+                    doc_symbols = self.request_document_symbols(relative_path)
+                    self._symbol_index.remove_file(relative_path)
+                    if doc_symbols is not None:
+                        self._flatten_symbols_into_index(
+                            self._symbol_index, relative_path, doc_symbols.root_symbols, parent_name_path=None
+                        )
+                    patched.add(relative_path)
+                except Exception as e:
+                    log.warning("Failed to patch index for %s, will retry next access: %s", relative_path, e)
+
+            self._index_dirty_files -= patched
+            if patched:
+                self._symbol_index_needs_save = True
+                log.debug("Incrementally patched symbol index for %d files", len(patched))
+        finally:
+            self._patching_index = False
 
     def request_workspace_symbol(self, query: str) -> list[ls_types.UnifiedSymbolInformation] | None:
         """

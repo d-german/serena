@@ -77,6 +77,10 @@ class CreateTextFileTool(EditingToolWithDiagnostics):
             # writing the file
             abs_path.parent.mkdir(parents=True, exist_ok=True)
             abs_path.write_text(content, encoding=self.project.project_config.encoding, newline=self.project.line_ending.newline_str)
+            # Notify symbol index that this file changed (bypasses CodeEditor)
+            ls_manager = self.agent.get_language_server_manager()
+            if ls_manager is not None:
+                ls_manager.mark_index_dirty(relative_path)
             answer = f"File created: {relative_path}."
             if will_overwrite_existing:
                 answer += " Overwrote existing file."

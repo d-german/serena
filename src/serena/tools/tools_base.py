@@ -305,6 +305,11 @@ class Tool(Component):
     def is_symbolic(self) -> bool:
         return issubclass(self.__class__, ToolMarkerSymbolicRead) or issubclass(self.__class__, ToolMarkerSymbolicEdit)
 
+    def _is_ls_loading(self) -> bool:
+        """Check if any language server is still loading/indexing."""
+        ls_manager = self.agent.get_language_server_manager()
+        return ls_manager is not None and ls_manager.is_any_server_loading()
+
     def apply_ex(self, log_call: bool = True, catch_exceptions: bool = True, mcp_ctx: Context | None = None, **kwargs) -> str:  # type: ignore
         """
         Applies the tool with logging and exception handling, using the given keyword arguments

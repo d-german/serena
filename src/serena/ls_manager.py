@@ -250,3 +250,15 @@ class LanguageServerManager:
 
     def has_suitable_ls_for_file(self, relative_file_path: str) -> bool:
         return self._get_suitable_language_server(relative_file_path) is not None
+
+    def mark_index_dirty(self, relative_path: str) -> None:
+        """Mark a file as dirty for symbol index update, routing to the appropriate LS."""
+        try:
+            ls = self.get_language_server(relative_path)
+            ls.mark_index_dirty(relative_path)
+        except Exception:
+            pass  # no LS available for this file type — nothing to track
+
+    def is_any_server_loading(self) -> bool:
+        """Return True if any active language server is still indexing/loading."""
+        return any(not ls.is_indexing_complete() for ls in self.iter_language_servers())
