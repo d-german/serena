@@ -2958,6 +2958,8 @@ class SolidLanguageServer(ABC):
                 log.debug("No document symbols cache to build symbol index from")
                 return
             self._symbol_index = self._build_symbol_index()
+        elif self._index_dirty_files:
+            self._patch_symbol_index()
 
         cache_file = self.cache_dir / self.SYMBOL_INDEX_CACHE_FILENAME
         try:
@@ -3025,7 +3027,7 @@ class SolidLanguageServer(ABC):
     def save_cache(self) -> None:
         self._save_raw_document_symbols_cache()
         self._save_document_symbols_cache()
-        if self._symbol_index_needs_save:
+        if self._symbol_index_needs_save or (self._symbol_index is None and self._document_symbols_cache):
             self._save_symbol_index()
 
     @property

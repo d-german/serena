@@ -126,9 +126,11 @@ class TestSaveCacheBehavior:
     """Test that save_cache only persists index when dirty."""
 
     def test_save_cache_skips_when_not_dirty(self):
-        """save_cache should NOT call _save_symbol_index when needs_save is False."""
+        """save_cache should NOT call _save_symbol_index when needs_save is False and index exists."""
         ls = MagicMock(spec=SolidLanguageServer)
         ls._symbol_index_needs_save = False
+        ls._symbol_index = MagicMock()  # index already exists
+        ls._document_symbols_cache = {}
         ls._save_raw_document_symbols_cache = MagicMock()
         ls._save_document_symbols_cache = MagicMock()
         ls._save_symbol_index = MagicMock()
@@ -139,6 +141,18 @@ class TestSaveCacheBehavior:
         """save_cache SHOULD call _save_symbol_index when needs_save is True."""
         ls = MagicMock(spec=SolidLanguageServer)
         ls._symbol_index_needs_save = True
+        ls._save_raw_document_symbols_cache = MagicMock()
+        ls._save_document_symbols_cache = MagicMock()
+        ls._save_symbol_index = MagicMock()
+        SolidLanguageServer.save_cache(ls)
+        ls._save_symbol_index.assert_called_once()
+
+    def test_save_cache_builds_index_when_none_but_cache_populated(self):
+        """save_cache SHOULD call _save_symbol_index when index is None but doc cache exists."""
+        ls = MagicMock(spec=SolidLanguageServer)
+        ls._symbol_index_needs_save = False
+        ls._symbol_index = None  # no index loaded yet
+        ls._document_symbols_cache = {"file.py": ("hash", MagicMock())}  # non-empty doc cache
         ls._save_raw_document_symbols_cache = MagicMock()
         ls._save_document_symbols_cache = MagicMock()
         ls._save_symbol_index = MagicMock()
