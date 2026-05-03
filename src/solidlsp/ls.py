@@ -1986,8 +1986,17 @@ class SolidLanguageServer(ABC):
                         child["parent"] = package_symbol
 
                 elif os.path.isfile(contained_dir_or_file_abs_path):
-                    with self._open_file_context(contained_dir_or_file_rel_path, open_in_ls=False) as file_data:
-                        document_symbols = self.request_document_symbols(contained_dir_or_file_rel_path, file_data)
+                    try:
+                        file_context = self._open_file_context(contained_dir_or_file_rel_path, open_in_ls=False)
+                    except Exception as exc:
+                        log.warning("Skipping file %s: failed to open (%s)", contained_dir_or_file_rel_path, exc)
+                        continue
+                    with file_context as file_data:
+                        try:
+                            document_symbols = self.request_document_symbols(contained_dir_or_file_rel_path, file_data)
+                        except Exception as exc:
+                            log.warning("Skipping file %s: failed to retrieve document symbols (%s)", contained_dir_or_file_rel_path, exc)
+                            continue
                         file_root_nodes = document_symbols.root_symbols
 
                         # Create file symbol, link with children

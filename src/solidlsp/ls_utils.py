@@ -215,6 +215,11 @@ class FileUtils:
                         f"Could not decode {file_path} with encoding='{encoding}'; using best match '{match.encoding}' instead",
                     )
                     return match.raw.decode(match.encoding)
+                # charset_normalizer found no text match -- likely a binary file
+                with open(file_path, 'rb') as f:
+                    chunk = f.read(8192)
+                if b'\x00' in chunk:
+                    raise ValueError(f'Cannot read binary file: {file_path}')
                 raise ude
         except Exception as exc:
             log.error(f"Failed to read '{file_path}' with encoding '{encoding}': {exc}")
